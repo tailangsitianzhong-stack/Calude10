@@ -8,9 +8,11 @@
 - `stages/stage02_fundamentals.md` … 第2段階：企業分析・ファンダメンタルズ分析【合格（日本企業の演習は持ち越し）】
 - `stages/stage03_technical.md` … 第3段階：テクニカル分析【合格（OHLCVを要する指標は持ち越し）】／全出力は `stages/stage03_backtest_results.md`
 - `stages/stage04_macro.md` … 第4段階：マクロ経済・金融政策分析【合格（イベントスタディと日本の業種データは持ち越し）】／全出力は `stages/stage04_macro_results.md`
+- `stages/stage05_strategies.md` … 第5段階：高度な投資戦略【合格（事例の一次資料確認とコスト込み再検証は持ち越し）】／全出力は `stages/stage05_strategy_results.md`
 - `tools/edgar_fundamentals.py` … SEC EDGAR XBRLから年次財務データを取得し指標を計算するスクリプト
 - `tools/backtest.py` … FREDの日次データでテクニカル・ルールをバックテストするスクリプト
 - `tools/macro_analysis.py` … French業種データとFREDで局面別リターン・金利感応度・逆イールド等を検証するスクリプト
+- `tools/strategy_analysis.py` … ファクター・手法の代理ポートフォリオ・日本のファクター・バークシャーの成績を検証するスクリプト
 
 ## 運用原則
 1. **事実・推測・予測を区別**する。本文では次のラベルを使う。
