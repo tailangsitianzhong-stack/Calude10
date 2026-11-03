@@ -12,7 +12,8 @@
 - `stages/stage06_growth.md` … 第6段階：将来有望な企業の発掘【合格（株価での検証と複数時点での再現は持ち越し）】／全出力は `stages/stage06_growth_screen_results.md`
 - `stages/stage07_valuation.md` … 第7段階：企業価値と株価の予測【合格（PEPのFCF確認と持分法投資の調整は持ち越し）】／全出力は `stages/stage07_valuation_results.md`
 - `stages/stage08_risk.md` … 第8段階：リスク管理【合格（日本の資産を含む検証と流動性リスクは持ち越し）】／全出力は `stages/stage08_risk_results.md`
-- `stages/stage09_analysis.md` … 第9段階：実践的な市場分析（KO・PEP、13項目・投資判断・予測の記録）【条件付き合格（他業種での分析が条件）】／補助計算 `stages/stage09_case_results.md`
+- `stages/stage09_analysis.md` … 第9段階：実践的な市場分析（KO・PEP、13項目・投資判断・予測の記録）【合格】／補助計算 `stages/stage09_case_results.md`
+- `stages/stage09b_sectors.md` … 第9段階（追加）：Micron（景気循環）・JPMorgan（銀行）の分析と、業種による評価方法の違い／全出力 `stages/stage09b_sector_results.md`
 - `predictions/prediction_log.csv` … 確率付きの予測の記録（第10段階で採点）
 - `tools/edgar_fundamentals.py` … SEC EDGAR XBRLから年次財務データを取得し指標を計算するスクリプト
 - `tools/backtest.py` … FREDの日次データでテクニカル・ルールをバックテストするスクリプト
@@ -21,6 +22,7 @@
 - `tools/growth_screen.py` … SEC XBRL framesで過去時点の成長株スクリーニングを再現し、10年後を追跡するスクリプト
 - `tools/valuation.py` … TTM財務・WACC・DCF（3シナリオ）・感応度・逆DCF・マルチプルの評価モデル（前提はファイル冒頭）
 - `tools/risk_analysis.py` … 資産配分・ストレステスト・相関・為替・裾・ブートストラップ・ケリー・損切りを検証するスクリプト
+- `tools/sector_cases.py` … 景気循環株の正常化利益・好況の継続年数の逆算、銀行の正当化P/TBVを計算するスクリプト
 - `tools/investment_case.py` … 会社予想ベースのDCF・下落シナリオ・生活必需品株の過去の下落を計算するスクリプト
 
 ## 運用原則
