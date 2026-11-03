@@ -10,11 +10,13 @@
 - `stages/stage04_macro.md` … 第4段階：マクロ経済・金融政策分析【合格（イベントスタディと日本の業種データは持ち越し）】／全出力は `stages/stage04_macro_results.md`
 - `stages/stage05_strategies.md` … 第5段階：高度な投資戦略【合格（事例の一次資料確認とコスト込み再検証は持ち越し）】／全出力は `stages/stage05_strategy_results.md`
 - `stages/stage06_growth.md` … 第6段階：将来有望な企業の発掘【合格（株価での検証と複数時点での再現は持ち越し）】／全出力は `stages/stage06_growth_screen_results.md`
+- `stages/stage07_valuation.md` … 第7段階：企業価値と株価の予測【合格（PEPのFCF確認と持分法投資の調整は持ち越し）】／全出力は `stages/stage07_valuation_results.md`
 - `tools/edgar_fundamentals.py` … SEC EDGAR XBRLから年次財務データを取得し指標を計算するスクリプト
 - `tools/backtest.py` … FREDの日次データでテクニカル・ルールをバックテストするスクリプト
 - `tools/macro_analysis.py` … French業種データとFREDで局面別リターン・金利感応度・逆イールド等を検証するスクリプト
 - `tools/strategy_analysis.py` … ファクター・手法の代理ポートフォリオ・日本のファクター・バークシャーの成績を検証するスクリプト
 - `tools/growth_screen.py` … SEC XBRL framesで過去時点の成長株スクリーニングを再現し、10年後を追跡するスクリプト
+- `tools/valuation.py` … TTM財務・WACC・DCF（3シナリオ）・感応度・逆DCF・マルチプルの評価モデル（前提はファイル冒頭）
 
 ## 運用原則
 1. **事実・推測・予測を区別**する。本文では次のラベルを使う。
