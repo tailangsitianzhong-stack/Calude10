@@ -15,6 +15,7 @@
 - `stages/stage09_analysis.md` … 第9段階：実践的な市場分析（KO・PEP、13項目・投資判断・予測の記録）【合格】／補助計算 `stages/stage09_case_results.md`
 - `stages/stage09b_sectors.md` … 第9段階（追加）：Micron（景気循環）・JPMorgan（銀行）の分析と、業種による評価方法の違い／全出力 `stages/stage09b_sector_results.md`
 - `predictions/prediction_log.csv` … 確率付きの予測の記録（第10段階で採点）
+- `stages/stage10_review.md` … 第10段階：学習内容の検証と改善（誤りの記録・再検証・統合した判断手順・到達度の評価）【合格（予測の採点は期限待ち）】／全出力 `stages/stage10_results.md`
 - `tools/edgar_fundamentals.py` … SEC EDGAR XBRLから年次財務データを取得し指標を計算するスクリプト
 - `tools/backtest.py` … FREDの日次データでテクニカル・ルールをバックテストするスクリプト
 - `tools/macro_analysis.py` … French業種データとFREDで局面別リターン・金利感応度・逆イールド等を検証するスクリプト
@@ -24,6 +25,8 @@
 - `tools/risk_analysis.py` … 資産配分・ストレステスト・相関・為替・裾・ブートストラップ・ケリー・損切りを検証するスクリプト
 - `tools/sector_cases.py` … 景気循環株の正常化利益・好況の継続年数の逆算、銀行の正当化P/TBVを計算するスクリプト
 - `tools/investment_case.py` … 会社予想ベースのDCF・下落シナリオ・生活必需品株の過去の下落を計算するスクリプト
+- `tools/robustness.py` … 基準率の別時点での再現、Newey-West によるt値の再計算
+- `tools/score_predictions.py` … 予測の記録の採点（ブライアスコア、キャリブレーション、未判定の一覧）
 
 ## 運用原則
 1. **事実・推測・予測を区別**する。本文では次のラベルを使う。
