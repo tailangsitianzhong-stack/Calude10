@@ -4,7 +4,9 @@
 
 ## 構成
 - `curriculum/00_curriculum.md` … 10段階カリキュラムの詳細分解（習得知識／必要データ／検証方法／合格基準）
-- `stages/stage01_basics.md` … 第1段階：株式投資の基礎理論（本文・テスト・実践課題・自己評価）
+- `stages/stage01_basics.md` … 第1段階：株式投資の基礎理論（本文・テスト・実践課題・自己評価）【合格】
+- `stages/stage02_fundamentals.md` … 第2段階：企業分析・ファンダメンタルズ分析【条件付き合格】
+- `tools/edgar_fundamentals.py` … SEC EDGAR XBRLから年次財務データを取得し指標を計算するスクリプト
 
 ## 運用原則
 1. **事実・推測・予測を区別**する。本文では次のラベルを使う。
