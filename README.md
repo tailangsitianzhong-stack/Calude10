@@ -3,6 +3,8 @@
 10段階カリキュラムに沿って株式投資・金融市場を体系的に学習し、各段階で理解度テスト・実践課題・自己評価を行う記録。
 
 ## 構成
+
+- `ai-stock-intelligence/docs/phase1_design.md` … Webアプリ「AI STOCK INTELLIGENCE」のフェーズ1設計書（承認待ち）
 - `curriculum/00_curriculum.md` … 10段階カリキュラムの詳細分解（習得知識／必要データ／検証方法／合格基準）
 - `stages/stage01_basics.md` … 第1段階：株式投資の基礎理論（本文・テスト・実践課題・自己評価）【合格】
 - `stages/stage02_fundamentals.md` … 第2段階：企業分析・ファンダメンタルズ分析【合格（日本企業の演習は持ち越し）】
