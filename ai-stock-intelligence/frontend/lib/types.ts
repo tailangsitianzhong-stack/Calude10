@@ -22,6 +22,7 @@ export interface Financials {
   security: Security; as_of: string | null; source: string | null; reliability: string | null; labels: Record<string, string>;
   note: string | null; quality_issues: { type: string; detail: Record<string, unknown> }[]; data_status: DataStatus;
   annual: FinRow[]; ttm: (FinRow & { basis: string }) | null; balance: FinRow | null; latest_filed: string | null;
+  currency: string | null; other_currencies: string[]; tag_notes: { concept: string; tag: string; note: string }[];
 }
 export interface IndexQuote {
   key: string; name: string; market: string; value: number | null; change_pct: number | null; as_of: string | null;

@@ -1,14 +1,24 @@
-import { fmtDay, fmtUsd } from "@/lib/format";
+import { currencyName, fmtDay, fmtMoney, fmtPerShare } from "@/lib/format";
 import type { Financials } from "@/lib/types";
 import { Card, Placeholder, StatusBadge } from "./ui";
 
-const ROWS: [string, "usd" | "eps"][] = [
-  ["revenue", "usd"], ["operating_income", "usd"], ["net_income", "usd"], ["eps_diluted", "eps"],
-  ["cfo", "usd"], ["capex", "usd"], ["dividends_paid", "usd"], ["buybacks", "usd"],
+const ROWS: [string, "money" | "eps"][] = [
+  ["revenue", "money"], ["operating_income", "money"], ["net_income", "money"], ["eps_diluted", "eps"],
+  ["cfo", "money"], ["capex", "money"], ["dividends_paid", "money"], ["buybacks", "money"],
 ];
 
-const fmt = (v: number | undefined, kind: "usd" | "eps") =>
-  v === undefined ? "—" : kind === "eps" ? `$${v.toFixed(2)}` : fmtUsd(v);
+// 報告されていない値は「—」（推測で埋めない）
+const fmt = (v: number | undefined, kind: "money" | "eps", cur: string | null) =>
+  v === undefined ? "—" : kind === "eps" ? fmtPerShare(v, cur) : fmtMoney(v, cur);
+
+const ISSUE_TEXT: Record<string, string> = {
+  stale: "最新の提出から120日超",
+  gap_filled: "SECの集計API（companyfacts）に未反映の提出書類を、書類のXBRLから直接取得",
+  missing: "SECに提出済みの書類の一部を読めなかった",
+  float_anomaly: "企業が提出した公開流通時価総額の桁に誤りの可能性（規模の順位づけから除外）",
+};
+const issueText = (q: { type: string; detail: Record<string, unknown> }) =>
+  (ISSUE_TEXT[q.type] ?? q.type) + (q.type === "stale" && typeof q.detail?.note === "string" ? `（${q.detail.note}）` : "");
 
 const margin = (r: Record<string, number>) =>
   r.revenue && r.operating_income !== undefined ? ((r.operating_income / r.revenue) * 100).toFixed(1) + "%" : "—";
@@ -22,6 +32,7 @@ export function FinancialsCard({ f }: { f: Financials | null }) {
     );
   }
   const years = f.annual.slice(-5);
+  const cur = f.currency;
   return (
     <Card id="financials" title="財務分析" className="md:col-span-2"
       aside={<span className="flex items-center gap-2"><span className="hidden text-[11px] text-faint sm:inline">{f.source}・{f.reliability}</span><StatusBadge status={f.data_status} /></span>}>
@@ -38,8 +49,8 @@ export function FinancialsCard({ f }: { f: Financials | null }) {
             {ROWS.map(([k, kind]) => (
               <tr key={k}>
                 <td className="py-2 text-left text-muted">{f.labels[k] ?? k}</td>
-                {years.map((y) => <td key={y.period_end} className="num py-2">{fmt(y.values[k], kind)}</td>)}
-                {f.ttm && <td className="num py-2 text-accent">{fmt(f.ttm.values[k], kind)}</td>}
+                {years.map((y) => <td key={y.period_end} className="num py-2">{fmt(y.values[k], kind, cur)}</td>)}
+                {f.ttm && <td className="num py-2 text-accent">{fmt(f.ttm.values[k], kind, cur)}</td>}
               </tr>
             ))}
             <tr>
@@ -59,22 +70,31 @@ export function FinancialsCard({ f }: { f: Financials | null }) {
         {f.balance && (
           <div className="rounded-xl border border-line bg-raised/40 p-3">
             <div className="mb-1 text-[11px] font-semibold text-faint">貸借対照表（{fmtDay(f.balance.period_end)}時点、{fmtDay(f.balance.filed)}提出）</div>
-            <div className="num grid grid-cols-2 gap-x-3 gap-y-0.5">
-              <span>総資産</span><span className="text-right text-ink">{fmtUsd(f.balance.values.assets)}</span>
-              <span>株主資本</span><span className="text-right text-ink">{fmtUsd(f.balance.values.equity)}</span>
-              <span>現金</span><span className="text-right text-ink">{fmtUsd(f.balance.values.cash)}</span>
-              <span>長期借入金</span><span className="text-right text-ink">{fmtUsd(f.balance.values.debt_noncurrent)}</span>
+            <div className="num grid grid-cols-2 gap-x-3 gap-y-0.5" data-testid="balance-table">
+              <span>総資産</span><span className="text-right text-ink">{fmtMoney(f.balance.values.assets, cur)}</span>
+              <span>負債</span><span className="text-right text-ink">{fmtMoney(f.balance.values.liabilities, cur)}</span>
+              <span>株主資本</span><span className="text-right text-ink">{fmtMoney(f.balance.values.equity, cur)}</span>
+              <span>現金</span><span className="text-right text-ink">{fmtMoney(f.balance.values.cash, cur)}</span>
+              <span>長期借入金</span><span className="text-right text-ink">{fmtMoney(f.balance.values.debt_noncurrent, cur)}</span>
             </div>
           </div>
         )}
         <div className="rounded-xl border border-line bg-raised/40 p-3 leading-relaxed">
           <div className="mb-1 text-[11px] font-semibold text-faint">データについて</div>
           <div>出所：{f.source}（信頼性：{f.reliability}）</div>
+          {cur && (
+            <div data-testid="financials-currency">
+              報告通貨：{cur}（{currencyName(cur).trim()}）。金額は企業が報告した通貨のままで、換算していません。
+              {f.other_currencies.length > 0 && `（${f.other_currencies.join("・")}建ての値は除外）`}
+            </div>
+          )}
+          {f.tag_notes.map((n) => <div key={n.concept}>※ {f.labels[n.concept] ?? n.concept}：{n.note}（XBRLタグ {n.tag}）</div>)}
+          <div>「—」は企業がその項目を報告していないことを示します（推測で補完しません）。</div>
           {f.ttm && <div>直近4四半期の計算：{f.ttm.basis}</div>}
           <div>最新の提出：{fmtDay(f.latest_filed)}。値は会計上（GAAP）の数値で、一時的な損益を含みます。</div>
           {f.quality_issues.length > 0 && (
             <div className="mt-1 text-warn">
-              ⚠ 品質の注意：{f.quality_issues.map((q) => (q.type === "stale" ? "最新の提出から120日超（SEC側のデータが更新されていない可能性）" : q.type)).join("、")}
+              ⚠ 品質の注意：{f.quality_issues.map(issueText).join("、")}
             </div>
           )}
         </div>

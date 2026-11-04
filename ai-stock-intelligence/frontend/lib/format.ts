@@ -20,14 +20,29 @@ export function fmtNum(v: number | null | undefined, digits = 2): string {
   return v.toLocaleString("ja-JP", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-// 財務の金額（ドル）を「億ドル」「兆ドル」で表示
-export function fmtUsd(v: number | null | undefined): string {
+// 通貨コード（ISO 4217）の表示名。一覧にない通貨はコードのまま表示する
+const CURRENCY_NAMES: Record<string, string> = {
+  USD: "ドル", CAD: "カナダドル", EUR: "ユーロ", GBP: "英ポンド", JPY: "円", CHF: "スイスフラン", AUD: "豪ドル",
+  CNY: "人民元", HKD: "香港ドル", TWD: "台湾ドル", KRW: "ウォン", INR: "インドルピー", BRL: "レアル", MXN: "メキシコペソ",
+  DKK: "デンマーククローネ", SEK: "スウェーデンクローナ", NOK: "ノルウェークローネ", ILS: "新シェケル",
+};
+export const currencyName = (cur: string | null | undefined) => (cur ? CURRENCY_NAMES[cur] ?? ` ${cur}` : "");
+
+// 財務の金額を、報告通貨の「億」「兆」で表示（例 1.23兆ドル、456億カナダドル）
+export function fmtMoney(v: number | null | undefined, cur: string | null | undefined = "USD"): string {
   if (v === null || v === undefined) return "—";
+  const u = currencyName(cur ?? "USD");
   const a = Math.abs(v);
-  if (a >= 1e12) return `${(v / 1e12).toFixed(2)}兆ドル`;
-  if (a >= 1e8) return `${(v / 1e8).toLocaleString("ja-JP", { maximumFractionDigits: 1 })}億ドル`;
-  if (a >= 1e4) return `${(v / 1e4).toLocaleString("ja-JP", { maximumFractionDigits: 0 })}万ドル`;
-  return v.toLocaleString("ja-JP");
+  if (a >= 1e12) return `${(v / 1e12).toFixed(2)}兆${u}`;
+  if (a >= 1e8) return `${(v / 1e8).toLocaleString("ja-JP", { maximumFractionDigits: 1 })}億${u}`;
+  if (a >= 1e4) return `${(v / 1e4).toLocaleString("ja-JP", { maximumFractionDigits: 0 })}万${u}`;
+  return `${v.toLocaleString("ja-JP")}${u}`;
+}
+
+// 1株あたりの値（EPSなど）：ドルは「$1.23」、それ以外は「1.23カナダドル」
+export function fmtPerShare(v: number | null | undefined, cur: string | null | undefined = "USD"): string {
+  if (v === null || v === undefined) return "—";
+  return !cur || cur === "USD" ? `$${v.toFixed(2)}` : `${v.toFixed(2)}${currencyName(cur)}`;
 }
 
 export function signed(v: number | null | undefined, digits = 2, suffix = "%"): { text: string; dir: "up" | "down" | "flat" } {

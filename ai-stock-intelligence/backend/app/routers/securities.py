@@ -108,7 +108,29 @@ def financials(market: str, code: str, as_of: date | None = Query(None, descript
     note = {"JP": "日本株の財務データ（J-Quants の財務情報・EDINET）は未接続",
             "US": "SEC EDGAR の取得対象外の銘柄（対象は公開流通時価総額の大きい順）"}[s.market] if snap["data_status"] in ("not_connected", "insufficient") else None
     return {"security": to_out(s).model_dump(), "as_of": as_of, "source": "SEC EDGAR XBRL（企業がSECに提出した書類）" if s.market == "US" else None,
-            "reliability": "一次情報" if s.market == "US" else None, "labels": LABELS, "note": note, "quality_issues": issues, **snap}
+            "reliability": "一次情報" if s.market == "US" else None, "labels": LABELS, "note": note, "quality_issues": issues,
+            "tag_notes": tag_notes(snap), **snap}
+
+
+# 代わりのXBRLタグを使ったとき、意味の違いを画面で説明する（値を補完したのではなく、企業が報告した別の項目）
+TAG_NOTES = {
+    "ProfitLoss": "親会社株主に帰属する純利益の報告がないため、非支配株主分を含む連結の純利益",
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest": "親会社株主分の報告がないため、非支配株主持分を含む純資産",
+    "RevenueFromContractWithCustomerIncludingAssessedTax": "税抜きの売上の報告がないため、売上に含めて回収する税を含む売上",
+    "NetIncomeLossAvailableToCommonStockholdersBasic": "純利益の報告がないため、普通株主に帰属する純利益",
+    "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations": "営業CFの合計の報告がないため、継続事業の営業CF",
+}
+
+
+def tag_notes(snap: dict) -> list[dict]:
+    rows = snap["annual"][-1:] + ([snap["balance"]] if snap["balance"] else [])
+    out, seen = [], set()
+    for r in rows:
+        for concept, tag in (r.get("tags") or {}).items():
+            if tag in TAG_NOTES and concept not in seen and concept in LABELS:
+                seen.add(concept)
+                out.append({"concept": concept, "tag": tag, "note": TAG_NOTES[tag]})
+    return out
 
 
 # (表示名, 実装予定のフェーズ, 表示予定の内容)

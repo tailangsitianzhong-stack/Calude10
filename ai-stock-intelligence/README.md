@@ -47,9 +47,9 @@ cd frontend && npm ci && npm run build && API_BASE_URL=http://127.0.0.1:8000 npm
 ## テスト
 
 ```bash
-cd backend && python -m pytest -q                 # 単体テスト（18件）
+cd backend && python -m pytest -q                 # 単体テスト（38件）
 cd frontend && npx tsc --noEmit && npx next build  # 型検査・ビルド
-cd frontend && npm run e2e                         # 画面のE2E（PC・スマートフォン、19件。API・Webの起動が必要）
+cd frontend && npm run e2e                         # 画面のE2E（PC・スマートフォン、21件。API・Webの起動が必要）
 API_DOWN=1 npm run e2e                             # APIを止めた状態のE2E（エラー表示・数値を作らないこと）
 ```
 
