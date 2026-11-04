@@ -33,11 +33,12 @@ class TiingoClient:
     name = "tiingo"
     delay_note = "日足（米国東部時間17:30頃に更新）"
 
-    def __init__(self, api_key: str):
-        if not api_key:
+    def __init__(self, api_key: str, network_secret: bool = False):
+        if not api_key and not network_secret:
             raise ValueError("Tiingo のAPIキーが未設定です（TIINGO_API_KEY）")
-        # 無料プランの上限（50リクエスト/時）に合わせて72秒に1件
-        self.http = RateLimitedClient(min_interval=72.0, headers={"Authorization": f"Token {api_key}"})
+        # 無料プランの上限（50リクエスト/時）に合わせて72秒に1件。ネットワークシークレットならヘッダーはプロキシが付ける
+        headers = {} if network_secret else {"Authorization": f"Token {api_key}"}
+        self.http = RateLimitedClient(min_interval=72.0, headers=headers)
 
     def daily(self, ticker: str, start: date) -> list[dict]:
         r = self.http.get(f"https://api.tiingo.com/tiingo/daily/{ticker.replace('.', '-')}/prices",
@@ -57,12 +58,13 @@ class MassiveClient:
     name = "massive"
     delay_note = "日足（無料プランは前営業日までの終値）"
 
-    def __init__(self, api_key: str, base_url: str = "https://api.polygon.io"):
-        if not api_key:
+    def __init__(self, api_key: str, base_url: str = "https://api.polygon.io", network_secret: bool = False):
+        if not api_key and not network_secret:
             raise ValueError("Massive（旧Polygon.io）のAPIキーが未設定です（MASSIVE_API_KEY）")
         self.base = base_url.rstrip("/")
-        # キーはURLに含めず Authorization ヘッダーで送る（ログ・エラーに残さないため）
-        self.http = RateLimitedClient(min_interval=12.5, headers={"Authorization": f"Bearer {api_key}"})  # 無料 5回/分
+        # キーはURLに含めず Authorization ヘッダーで送る（ログ・エラーに残さないため）。ネットワークシークレットならプロキシが付ける
+        headers = {} if network_secret else {"Authorization": f"Bearer {api_key}"}
+        self.http = RateLimitedClient(min_interval=12.5, headers=headers)  # 無料 5回/分
 
     def grouped_daily(self, d: date) -> list[dict]:
         r = self.http.get(f"{self.base}/v2/aggs/grouped/locale/us/market/stocks/{d.isoformat()}",

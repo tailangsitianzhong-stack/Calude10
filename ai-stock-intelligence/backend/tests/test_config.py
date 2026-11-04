@@ -4,7 +4,7 @@ import pytest
 from app.config import Settings
 from app.providers import fred
 
-ALL_KEYS = ["DATABASE_URL", "JQUANTS_API_KEY", "JQUANTS_PLAN", "JQUANTS_REFRESH_TOKEN", "US_PRICE_PROVIDER", "TIINGO_API_KEY",
+ALL_KEYS = ["DATABASE_URL", "NETWORK_SECRETS", "JQUANTS_API_KEY", "JQUANTS_PLAN", "JQUANTS_REFRESH_TOKEN", "US_PRICE_PROVIDER", "TIINGO_API_KEY",
             "MASSIVE_API_KEY", "POLYGON_API_KEY", "MASSIVE_BASE_URL", "POLYGON_BASE_URL", "SEC_USER_AGENT",
             "SEC_UNIVERSE_SIZE", "SEC_EXTRA_TICKERS", "FRED_API_KEY", "EDINET_API_KEY", "ANTHROPIC_API_KEY"]
 
@@ -119,3 +119,20 @@ def test_secrets_are_redacted_from_errors():
     with pytest.raises(HttpError) as e:
         check(r)
     assert "SECRET" not in str(e.value) and "403" in str(e.value)
+
+
+def test_network_secret_mode_marks_configured_and_sends_no_auth_header(clean_env):
+    from app.providers import jquants, us_prices
+    clean_env.setenv("NETWORK_SECRETS", "jquants, Tiingo")
+    clean_env.setenv("US_PRICE_PROVIDER", "tiingo")
+    s = make()
+    assert s.has_credential("jquants") and s.has_credential("tiingo") and not s.has_credential("massive")
+    assert s.jquants_api_key == "" and s.tiingo_api_key == ""
+    jc = jquants.JQuantsClient("", "free", network_secret=True)
+    tc = us_prices.TiingoClient("", network_secret=True)
+    mc = us_prices.MassiveClient("", network_secret=True)
+    # 認証ヘッダーはアプリからは送らない（プロキシが付ける）
+    assert "x-api-key" not in jc.http.client.headers and "authorization" not in tc.http.client.headers
+    assert "authorization" not in mc.http.client.headers
+    with pytest.raises(ValueError):
+        jquants.JQuantsClient("", "free")  # キーもネットワークシークレットもない場合は従来どおりエラー

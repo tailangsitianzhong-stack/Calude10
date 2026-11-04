@@ -15,7 +15,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
     # 手元の .env に本物のキーが入っていても、テストはキー未設定の状態で行う（環境変数が .env より優先される）
     for k in ("JQUANTS_API_KEY", "JQUANTS_REFRESH_TOKEN", "US_PRICE_PROVIDER", "TIINGO_API_KEY", "MASSIVE_API_KEY",
-              "POLYGON_API_KEY", "SEC_USER_AGENT", "FRED_API_KEY", "EDINET_API_KEY", "ANTHROPIC_API_KEY"):
+              "POLYGON_API_KEY", "SEC_USER_AGENT", "FRED_API_KEY", "EDINET_API_KEY", "ANTHROPIC_API_KEY", "NETWORK_SECRETS"):
         monkeypatch.setenv(k, "")
     monkeypatch.setenv("JQUANTS_PLAN", "free")
     from app import config, db as dbmod

@@ -175,3 +175,17 @@ SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 **書式の注意**：`名前=値` の形で、引用符・前後の空白・行末のコメントは付けない。値を空にした行は「未設定」として扱う（既定値があるものは既定値）。
 
 **秘密情報の扱い**：APIキーはサーバー側だけで使い、ブラウザに送らない。FRED と Massive のキーはログ・エラーメッセージ・画面に出ないよう伏せる（Massive はヘッダーで送信、FRED は URL を記録しない）。
+
+### Claude Code のクラウド環境の「ネットワークシークレット」で登録する場合
+
+キーはアプリにも環境変数にも入らず、通信の途中で認証ヘッダーとして付け加えられる。アプリ側には `NETWORK_SECRETS` だけを環境変数で設定する。
+
+| 取得元 | 許可ウェブサイト | パスプレフィックス | ヘッダー名 | プレフィックス | 値 |
+|---|---|---|---|---|---|
+| J-Quants | `api.jquants.com` | `/v2/` | `x-api-key` | （空） | APIキー |
+| Tiingo | `api.tiingo.com` | （空） | `Authorization` | `Token` | トークン |
+| Massive（旧Polygon） | `api.polygon.io` | （空） | `Authorization` | `Bearer` | キー |
+
+- FRED はキーを URL に含める方式のため、ネットワークシークレットでは渡せない（キー不要の公開データで動く）。
+- SEC の User-Agent は秘密情報ではないため、環境変数 `SEC_USER_AGENT` に設定する。
+- 環境変数として設定するもの：`NETWORK_SECRETS=jquants,tiingo`、`US_PRICE_PROVIDER=tiingo`、`JQUANTS_PLAN=free`、`SEC_USER_AGENT=...`

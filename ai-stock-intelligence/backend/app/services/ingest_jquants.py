@@ -21,11 +21,11 @@ def run(session: Session) -> IngestionRun:
     run = IngestionRun(dataset="prices_jp", source=f"J-Quants API V2（{st.jquants_plan}）", status="running")
     session.add(run)
     session.commit()
-    if not st.jquants_api_key:
-        run.status, run.message, run.finished_at = "skipped", "APIキー未設定（JQUANTS_API_KEY）", datetime.now(timezone.utc)
+    if not st.has_credential("jquants"):
+        run.status, run.message, run.finished_at = "skipped", "APIキー未設定（JQUANTS_API_KEY またはネットワークシークレット）", datetime.now(timezone.utc)
         session.commit()
         return run
-    client = jquants.JQuantsClient(st.jquants_api_key, st.jquants_plan)
+    client = jquants.JQuantsClient(st.jquants_api_key, st.jquants_plan, network_secret=st.via_network_secret("jquants"))
     total, errors = 0, []
     try:
         try:

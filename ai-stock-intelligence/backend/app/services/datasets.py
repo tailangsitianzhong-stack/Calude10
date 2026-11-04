@@ -46,9 +46,9 @@ def dataset_status(session: Session) -> list[dict]:
             latest_data, rows = ok_run.source_as_of, ok_run.rows
         delay = meta["delay"]
         if key == "prices_jp":
-            delay = jquants.DELAY_NOTE.get(st.jquants_plan, "") if st.jquants_api_key else "未接続"
-        configured = {"prices_jp": bool(st.jquants_api_key),
-                      "prices_us": bool(st.us_price_provider and (st.tiingo_api_key or st.massive_api_key))}.get(key, True)
+            delay = jquants.DELAY_NOTE.get(st.jquants_plan, "") if st.has_credential("jquants") else "未接続"
+        configured = {"prices_jp": st.has_credential("jquants"),
+                      "prices_us": bool(st.us_price_provider and st.has_credential(st.us_price_provider))}.get(key, True)
         if not configured:
             status = "not_connected"
         elif ok_run is None:
@@ -62,11 +62,11 @@ def dataset_status(session: Session) -> list[dict]:
         warnings = []
         if key == "sec_financials" and st.sec_ua_is_provisional:
             warnings.append("SECへの連絡先（User-Agent）が仮設定です。専用のメールアドレスに変更してください")
-        if key == "prices_jp" and st.jquants_refresh_token and not st.jquants_api_key:
+        if key == "prices_jp" and st.jquants_refresh_token and not st.has_credential("jquants"):
             warnings.append("JQUANTS_REFRESH_TOKEN（V1）は V2 では使えません。ダッシュボードで発行した APIキーを JQUANTS_API_KEY に設定してください")
         if key == "fred" and run and run.message and "FRED_API_KEY" in run.message:
             warnings.append("FRED_API_KEY が受け付けられなかったため、公開CSVで取得しています")
-        if key == "prices_jp" and st.jquants_api_key and st.jquants_plan == "free":
+        if key == "prices_jp" and st.has_credential("jquants") and st.jquants_plan == "free":
             warnings.append("Freeプランのため株価は約12週間遅れています。現在の株価ではありません")
         out.append({"dataset": key, **meta, "delay": delay, "status": status, "configured": configured,
                     "last_run_at": run.finished_at if run else None, "last_run_status": run.status if run else None,

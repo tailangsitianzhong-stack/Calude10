@@ -24,9 +24,11 @@ IMPLEMENTED: set[str] = {"jquants", "us_prices", "sec_edgar", "fred"}
 
 def _is_set(settings: Settings, env: str) -> bool:
     if env == "TIINGO_API_KEY or MASSIVE_API_KEY":
-        return bool(settings.tiingo_api_key or settings.massive_api_key)
+        return settings.has_credential("tiingo") or settings.has_credential("massive")
     if env == "SEC_USER_AGENT":
         return True  # 未設定でも仮の値で動く（画面に「仮設定」と表示）
+    if env == "JQUANTS_API_KEY":
+        return settings.has_credential("jquants")
     return bool(getattr(settings, env.lower(), ""))
 
 

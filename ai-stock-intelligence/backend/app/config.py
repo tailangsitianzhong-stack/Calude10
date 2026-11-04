@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # FRED：未設定なら公開CSV（fredgraph.csv）、設定すれば公式API（api.stlouisfed.org）を使う
     fred_api_key: str = ""
 
+    # クラウド環境の「ネットワークシークレット」で認証ヘッダーを付ける取得元（カンマ区切り：jquants,tiingo,massive）。
+    # 指定した取得元は、アプリ側にキーがなくても接続設定済みとして扱い、認証ヘッダーを自分では付けない
+    # （通信の途中でプロキシが付ける。キーの値はアプリにも環境変数にも入らない）
+    network_secrets: str = ""
+
     # 将来のフェーズで使う予定（現在は読み込むだけで使っていない）
     edinet_api_key: str = ""
     anthropic_api_key: str = ""
@@ -95,6 +100,14 @@ class Settings(BaseSettings):
         if v not in US_PRICE_PROVIDERS:
             raise ValueError(f"US_PRICE_PROVIDER は tiingo / massive / polygon のいずれか（指定値：{v}）")
         return "massive" if v == "polygon" else v
+
+    def via_network_secret(self, provider: str) -> bool:
+        return provider in {x.strip().lower() for x in self.network_secrets.split(",") if x.strip()}
+
+    def has_credential(self, provider: str) -> bool:
+        """キーが環境変数にあるか、ネットワークシークレットで付与される設定か。"""
+        key = {"jquants": self.jquants_api_key, "tiingo": self.tiingo_api_key, "massive": self.massive_api_key}.get(provider, "")
+        return bool(key.strip()) or self.via_network_secret(provider)
 
     @property
     def massive_api_key(self) -> str:

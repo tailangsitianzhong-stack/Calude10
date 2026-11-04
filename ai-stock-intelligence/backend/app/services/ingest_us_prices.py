@@ -18,15 +18,15 @@ def run(session: Session) -> IngestionRun:
     run = IngestionRun(dataset="prices_us", source=f"米国株の株価（{prov or '未選択'}）", status="running")
     session.add(run)
     session.commit()
-    key = {"tiingo": st.tiingo_api_key, "massive": st.massive_api_key, "polygon": st.massive_api_key}.get(prov, "")
-    if not prov or not key:
+    key = {"tiingo": st.tiingo_api_key, "massive": st.massive_api_key}.get(prov, "")
+    if not prov or not st.has_credential(prov):
         run.status, run.finished_at = "skipped", datetime.now(timezone.utc)
         run.message = "米国株の株価APIが未設定（US_PRICE_PROVIDER と APIキー）"
         session.commit()
         return run
     total, errors = 0, []
     if prov == "tiingo":
-        client = us_prices.TiingoClient(key)
+        client = us_prices.TiingoClient(key, network_secret=st.via_network_secret("tiingo"))
         # 財務データを取得済みの銘柄（SECの対象）から。無料プランの上限のため1回の実行は40銘柄まで
         ids = [i for (i,) in session.execute(select(FinancialFact.security_id).distinct())]
         secs = list(session.scalars(select(Security).where(Security.id.in_(ids)).order_by(Security.code)))
@@ -48,7 +48,7 @@ def run(session: Session) -> IngestionRun:
         finally:
             client.close()
     else:
-        client = us_prices.MassiveClient(key, st.massive_base_url)
+        client = us_prices.MassiveClient(key, st.massive_base_url, network_secret=st.via_network_secret("massive"))
         have = {d for (d,) in session.execute(select(DailyPrice.trade_date).where(DailyPrice.provider == "massive").distinct())}
         d, fetched = date.today() - timedelta(days=1), 0
         try:

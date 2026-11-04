@@ -47,11 +47,13 @@ def parse_index_bars(rows: list[dict]) -> list[dict]:
 
 
 class JQuantsClient:
-    def __init__(self, api_key: str, plan: str = "free"):
-        if not api_key:
+    def __init__(self, api_key: str, plan: str = "free", network_secret: bool = False):
+        if not api_key and not network_secret:
             raise ValueError("J-Quants のAPIキーが未設定です（JQUANTS_API_KEY）")
         per_min = RATE_PER_MIN.get(plan, 5)
-        self.http = RateLimitedClient(min_interval=60.0 / per_min + 0.2, headers={"x-api-key": api_key})
+        # ネットワークシークレットの場合、x-api-key はプロキシが付けるので、ここでは付けない（二重送信を避ける）
+        headers = {} if network_secret else {"x-api-key": api_key}
+        self.http = RateLimitedClient(min_interval=60.0 / per_min + 0.2, headers=headers)
 
     def _paged(self, path: str, params: dict) -> list[dict]:
         rows, p = [], dict(params)
