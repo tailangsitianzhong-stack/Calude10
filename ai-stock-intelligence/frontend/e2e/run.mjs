@@ -87,6 +87,25 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-us-${label}.png`, fullPage: true });
   });
 
+  await test(`[${label}] 日本企業の財務（トヨタ・IFRS）：円・会計基準・12週間遅延・純資産の表記、経常利益は「—」`, async () => {
+    const res = await page.goto(BASE + "/stocks/JP/7203");
+    assert(res.status() === 200, `7203 の詳細ページが ${res.status()}`);
+    const card = page.locator("#financials");
+    if (/財務データは未取得です/.test(await card.innerText())) return;  // 財務情報を未取得の環境（J-Quants 未接続）では値を出さないことだけ確認
+    const t = await page.getByTestId("financials-table").innerText();
+    assert(/兆円|億円/.test(t) && !/ドル/.test(t), `金額が円で表示されていない：${t.slice(0, 160)}`);
+    assert(/IFRS/.test(await page.getByTestId("accounting-standard").innerText()), "会計基準の表示がない");
+    const ord = await page.locator("tr", { hasText: "経常利益" }).first().innerText();
+    assert(!/\d/.test(ord.replace("経常利益", "")), `IFRS なのに経常利益に値がある：${ord}`);
+    const bal = await page.getByTestId("balance-table").innerText();
+    assert(/純資産（非支配株主持分を含む）/.test(bal) && /自己資本比率/.test(bal), `純資産の表記がない：${bal}`);
+    assert(/J-Quants/.test(await card.innerText()), "財務データの出所（J-Quants）が表示されていない");
+    const delay = page.getByTestId("financials-delay");
+    if (await delay.count()) assert(/12週間/.test(await delay.innerText()), "Freeプランの遅延の表示がない");
+    await noHorizontalOverflow(page);
+    if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-jp-fin-${label}.png`, fullPage: true });
+  });
+
   await test(`[${label}] カナダドルで報告する企業（ENB）：エラーにならず、報告通貨で表示`, async () => {
     const res = await page.goto(BASE + "/stocks/US/ENB");
     assert(res.status() === 200, `ENB の詳細ページが ${res.status()}`);

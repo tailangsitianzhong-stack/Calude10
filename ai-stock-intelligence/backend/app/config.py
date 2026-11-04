@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     sec_universe_size: int = 150  # 財務データを取得する米国株の数（公開流通時価総額の大きい順）
     sec_extra_tickers: str = "KO,PEP,MU,JPM,KDP"
 
+    # 日本企業の財務情報（J-Quants）を定期実行で取得するか。既定は取得しない（全銘柄の一括取得は利用者の承認後に有効にする）
+    jquants_fins_schedule: bool = False
+    jquants_fins_max_dates: int = 20  # 定期実行1回あたりに取得する開示日の数
+
     # FRED：未設定なら公開CSV（fredgraph.csv）、設定すれば公式API（api.stlouisfed.org）を使う
     fred_api_key: str = ""
 
