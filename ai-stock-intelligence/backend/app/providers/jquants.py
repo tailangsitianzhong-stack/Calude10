@@ -20,6 +20,10 @@ DELAY_NOTE = {"free": "約12週間遅延（Freeプラン）", "light": "前営�
 DELAY_DAYS = {"free": 84}  # 12週間
 
 
+class PlanNotAvailable(Exception):
+    """契約プランでは提供されていないAPI（例：Freeプランの TOPIX）。認証の失敗とは区別する。"""
+
+
 def to_jq_code(code: str) -> str:
     """JPXの4桁（英字を含む場合あり）のコードを、J-Quantsの5桁コードにする（末尾0は普通株式）。"""
     return code if len(code) == 5 else code + "0"
@@ -59,6 +63,8 @@ class JQuantsClient:
         rows, p = [], dict(params)
         while True:
             r = self.http.get(BASE + path, params=p)
+            if r.status_code == 403 and "not available on your subscription" in r.text:
+                raise PlanNotAvailable(f"{path} はご契約のプランでは提供されていません")
             if r.status_code in (401, 403):
                 raise PermissionError(f"J-Quants の認証に失敗しました（{r.status_code}）。APIキーとプランを確認してください")
             check(r)

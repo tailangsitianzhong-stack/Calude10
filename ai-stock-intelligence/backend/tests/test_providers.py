@@ -96,3 +96,17 @@ def test_fred_incremental_update_handles_period_start_before_cosd(client, monkey
         s.commit()
         vals = {o.obs_date: o.value for o in s.query(MacroObservation).filter_by(series_key="jp_call")}
         assert vals == {date(2026, 8, 1): 1.0, date(2026, 9, 1): 1.1}  # 改定は上書き、重複なし
+
+
+def test_jquants_plan_limit_is_not_auth_failure():
+    import httpx
+    import pytest
+    c = jquants.JQuantsClient("", "free", network_secret=True)
+
+    class H:
+        def get(self, url, params=None):
+            return httpx.Response(403, text='{"message":"This API is not available on your subscription."}',
+                                  request=httpx.Request("GET", url))
+    c.http = H()
+    with pytest.raises(jquants.PlanNotAvailable):
+        c.topix()

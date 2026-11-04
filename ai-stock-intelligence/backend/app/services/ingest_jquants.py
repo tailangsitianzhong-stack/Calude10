@@ -26,11 +26,14 @@ def run(session: Session) -> IngestionRun:
         session.commit()
         return run
     client = jquants.JQuantsClient(st.jquants_api_key, st.jquants_plan, network_secret=st.via_network_secret("jquants"))
-    total, errors = 0, []
+    total, errors, notes = 0, [], []
     try:
         try:
             total += store_index(session, "topix", jquants.parse_index_bars(client.topix(date.today() - timedelta(days=800))), "jquants")
             session.commit()
+        except jquants.PlanNotAvailable:
+            session.rollback()
+            notes.append("TOPIX はご契約のプランでは提供されていません（Light以上で取得可能）")
         except Exception as e:
             session.rollback()
             errors.append(f"TOPIX: {redact(str(e))[:150]}")
@@ -45,7 +48,7 @@ def run(session: Session) -> IngestionRun:
                     rows = jquants.parse_daily_bars(client.daily_bars_by_date(d))
                     total += store_prices(session, "JP", rows, "jquants", delay * 24 * 60 if delay else None)
                     session.commit()
-                except PermissionError as e:
+                except (PermissionError, jquants.PlanNotAvailable) as e:
                     errors.append(redact(str(e)))
                     break
                 except Exception as e:
@@ -58,7 +61,7 @@ def run(session: Session) -> IngestionRun:
     run = session.get(IngestionRun, run.id)
     run.rows, run.finished_at = total, datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if total else "failed")
-    run.message = "; ".join(errors[:5])[:1000] or None
+    run.message = "; ".join(notes + errors[:5])[:1000] or None
     run.source_as_of = session.scalar(select(func.max(DailyPrice.trade_date)).where(DailyPrice.provider == "jquants"))
     session.commit()
     return run

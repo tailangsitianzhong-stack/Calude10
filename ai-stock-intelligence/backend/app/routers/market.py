@@ -33,7 +33,13 @@ def overview(session: Session = Depends(get_session)) -> list[IndexQuote]:
         bars = list(session.scalars(select(IndexBar).where(IndexBar.index_key == key, IndexBar.provider.in_(provs))
                                     .order_by(IndexBar.trade_date.desc()).limit(2)))
         if not bars:
-            note = "J-Quants API キー未設定のため未接続" if key == "topix" else "未取得"
+            st = get_settings()
+            if key == "topix" and st.has_credential("jquants") and st.jquants_plan == "free":
+                note = "J-Quants の Free プランでは TOPIX は提供されていません（Light 以上で取得可能）"
+            elif key == "topix":
+                note = "J-Quants API キー未設定のため未接続"
+            else:
+                note = "未取得"
             out.append(IndexQuote(key=key, name=name, market=mkt, value=None, change_pct=None, as_of=None, provider=None,
                                   is_delayed=None, data_status="not_connected", note=note))
             continue
