@@ -14,6 +14,7 @@ from ..config import get_settings
 from ..models import DataQualityCheck, EdinetDocument, FinancialFact, IngestionRun, JpDisclosure, Security
 from ..providers import edinet
 from ..providers.http import redact
+from .quality import add_once, forget_pending
 
 DATASET = "financials_jp_edinet"
 QUALITY = "edinet"
@@ -177,8 +178,8 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                                     "problems": parsed["problems"], "cross_check": checks, "csv": parsed["csv_name"]},
                             fetched_at=now))
                         for p in parsed["problems"]:
-                            session.add(DataQualityCheck(dataset=QUALITY, subject=sec.code, check_type="invalid_value",
-                                                         severity="warn", detail={"doc_id": meta["docID"], **p}))
+                            add_once(session, QUALITY, sec.code, "invalid_value", {"doc_id": meta["docID"], "concept": p["concept"]},
+                                     "warn", {"doc_id": meta["docID"], **p})
                         session.commit()
                         stats["documents_parsed"] += 1
                         stats["facts_added"] += added
@@ -187,6 +188,7 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                         stats["check_mismatch"] += sum(not c["match"] for c in checks)
                     except Exception as e:  # 1件の書類の失敗で他を止めない。失敗も記録して原因を追えるようにする
                         session.rollback()
+                        forget_pending(session)
                         errors.append(f"{meta['docID']}: {redact(str(e))[:150]}")
                         session.add(EdinetDocument(
                             doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),

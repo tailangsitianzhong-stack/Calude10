@@ -71,6 +71,8 @@ def main() -> None:
     ap.add_argument("--codes", default=None, help="jquants_fins：銘柄コード（カンマ区切り）")
     ap.add_argument("--dates", default=None, help="jquants_fins：開示日 YYYY-MM-DD（カンマ区切り）")
     ap.add_argument("--max-dates", type=int, default=None, help="jquants_fins：1回に取得する開示日の数")
+    ap.add_argument("--dedupe-quality", action="store_true",
+                    help="jquants_fins：API に接続せず、内容が同じ品質の記録の重複だけを削除する（財務の値には触れない）")
     ap.add_argument("--quality-only", action="store_true", help="jquants_fins：API に接続せず、保存済みの開示から品質の記録だけを作る")
     a = ap.parse_args()
     init_db()
@@ -91,6 +93,10 @@ def main() -> None:
                 ap.error("edinet には --codes・--start・--end が必要です（全銘柄の一括取得は行わない）")
             job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()],
                 start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end))
+    elif a.task == "jquants_fins" and a.dedupe_quality:
+        from .services.quality import remove_duplicates
+        with SessionLocal() as s:
+            log.info("quality dedupe: removed %s duplicate rows", remove_duplicates(s))
     elif a.task == "jquants_fins":
         from datetime import date as _d
         job("jquants_fins", codes=[c.strip() for c in a.codes.split(",") if c.strip()] if a.codes else None,
