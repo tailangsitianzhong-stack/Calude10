@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     us_price_provider: str = ""
     # 主の取得元が使えないときの代替（tiingo / massive）。空なら、キーのあるもう一方を使う
     us_price_fallback: str = ""
+    # Massive で1回の実行に取得する営業日の数（無料プランは5リクエスト/分のため、1日あたり約12.5秒）
+    massive_max_days: int = 60
     tiingo_api_key: str = ""
     # Massive（旧 Polygon.io）のキー：MASSIVE_API_KEY を優先し、空なら旧名 POLYGON_API_KEY を使う
     # （空の MASSIVE_API_KEY= が .env にあっても POLYGON_API_KEY が無視されないよう、別々に読んでから選ぶ）

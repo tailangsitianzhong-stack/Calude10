@@ -61,7 +61,7 @@ def _massive(session: Session, st) -> tuple[int, list[str]]:
     have = {d for (d,) in session.execute(select(DailyPrice.trade_date).where(DailyPrice.provider == "massive").distinct())}
     d, fetched, ok, total, errors = date.today() - timedelta(days=1), 0, 0, 0, []
     try:
-        while d >= date.today() - timedelta(days=730) and fetched < 60:
+        while d >= date.today() - timedelta(days=730) and fetched < max(1, st.massive_max_days):
             if d.weekday() < 5 and d not in have:
                 try:
                     total += store_prices(session, "US", client.grouped_daily(d), "massive", None)

@@ -162,3 +162,20 @@ def test_jp_outage_has_no_substitute_and_is_explicit(client, monkeypatch):
     ds = {x["dataset"]: x for x in client.get("/api/v1/system/status").json()["data_sources"]}["prices_jp"]
     assert ds["status"] == "error" and any("代わりの取得元はありません" in w for w in ds["warnings"])
     config.get_settings.cache_clear()
+
+
+def test_massive_max_days_limits_requests(us_co, monkeypatch):
+    """無料プラン（5リクエスト/分）のため、Massive の1回の取得日数を MASSIVE_MAX_DAYS で制限できる。"""
+    _env(monkeypatch, US_PRICE_PROVIDER="massive", NETWORK_SECRETS="massive", MASSIVE_MAX_DAYS="2")
+    seen = []
+
+    class Counting(MassiveOK):
+        def grouped_daily(self, d):
+            seen.append(d)
+            return super().grouped_daily(d)
+
+    monkeypatch.setattr(us_prices, "MassiveClient", Counting)
+    with SessionLocal() as s:
+        assert ingest_us_prices.run(s).status == "success"
+    assert len(seen) == 2
+    config.get_settings.cache_clear()
