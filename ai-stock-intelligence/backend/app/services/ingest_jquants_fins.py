@@ -74,6 +74,27 @@ def store_records(session: Session, rows: list[dict], secmap: dict[str, int], no
     return stats
 
 
+def record_irregular_periods(session: Session) -> int:
+    """決算期変更などで1年ではない期間（350〜380日以外）の通期の決算短信を、品質の記録に残す（追記のみ・重複しない）。
+    これらは年度データとして扱わない（financials.jp_annual）。戻り値は新たに記録した件数。
+    REIT は決算期が通常6か月のため、決算期変更とは区別し、ここでは記録しない（実データ：1年でない271件のうち231件が REIT）。"""
+    have = {(q.subject, (q.detail or {}).get("disc_no")) for q in session.scalars(
+        select(DataQualityCheck).where(DataQualityCheck.dataset == QUALITY, DataQualityCheck.check_type == "irregular_period"))}
+    n = 0
+    for d in session.scalars(select(JpDisclosure).where(JpDisclosure.kind == "statement", JpDisclosure.period_type == "FY",
+                                                         JpDisclosure.period_start.is_not(None), JpDisclosure.period_end.is_not(None))):
+        days = (d.period_end - d.period_start).days
+        if 350 <= days <= 380 or d.accounting_standard == "REIT" or (d.jq_code, d.disc_no) in have:
+            continue
+        session.add(DataQualityCheck(dataset=QUALITY, subject=d.jq_code, check_type="irregular_period", severity="info", detail={
+            "disc_no": d.disc_no, "disc_date": str(d.disc_date), "period_start": str(d.period_start),
+            "period_end": str(d.period_end), "days": days,
+            "note": "決算期変更などで1年ではない期間の通期の決算短信のため、年度データとして扱わない"}))
+        n += 1
+    session.commit()
+    return n
+
+
 def window_dates(today: date, plan: str, fetched: set[str], max_dates: int) -> list[date]:
     """取得できる期間の平日のうち、まだ取得していない開示日（新しい順）。"""
     newest = today - timedelta(days=jquants.DELAY_DAYS.get(plan, 0))
@@ -98,8 +119,15 @@ def _record_quality(session: Session, stats: dict) -> None:
 
 
 def run(session: Session, codes: list[str] | None = None, dates: list[date] | None = None,
-        max_dates: int | None = None) -> IngestionRun:
+        max_dates: int | None = None, quality_only: bool = False) -> IngestionRun:
     st = get_settings()
+    if quality_only:  # API には接続せず、保存済みの開示から品質の記録だけを作る
+        n = record_irregular_periods(session)
+        r = IngestionRun(dataset=QUALITY, source="保存済みの開示の品質確認（API接続なし）", status="success", rows=n,
+                         message=f"1年ではない期間の通期の決算短信を新たに {n} 件記録", finished_at=datetime.now(timezone.utc))
+        session.add(r)
+        session.commit()
+        return r
     # 前回の実行が途中で止まった（プロセスの強制終了など）場合、その記録を「中断」にする。
     # 取得済みの開示日は fetch_log に残っているので、今回の実行は残りの日付から再開する
     for old in session.scalars(select(IngestionRun).where(IngestionRun.dataset == DATASET, IngestionRun.status == "running")):
@@ -171,6 +199,7 @@ def run(session: Session, codes: list[str] | None = None, dates: list[date] | No
                 one(d.isoformat(), lambda d=d: client.fins_summary(disc_date=d), d.isoformat())
     finally:
         client.close()
+    record_irregular_periods(session)
     run = session.get(IngestionRun, run.id)
     run.rows, run.finished_at = totals["facts_added"], datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if totals["requests_ok"] else "failed")

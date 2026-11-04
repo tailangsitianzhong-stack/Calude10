@@ -25,6 +25,7 @@ const ISSUE_TEXT: Record<string, string> = {
   float_anomaly: "企業が提出した公開流通時価総額の桁に誤りの可能性（規模の順位づけから除外）",
   invalid_value: "数値に変換できない値があったため、その項目を保存していない",
   unknown_doc_type: "公式の一覧にない開示書類種別",
+  irregular_period: "決算期変更などで1年ではない期間の決算があり、その期は年度データに含めていません",
 };
 const issueText = (q: { type: string; detail: Record<string, unknown> }) =>
   (ISSUE_TEXT[q.type] ?? q.type) + (q.type === "stale" && typeof q.detail?.note === "string" ? `（${q.detail.note}）` : "");

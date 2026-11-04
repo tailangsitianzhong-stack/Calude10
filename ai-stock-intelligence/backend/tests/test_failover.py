@@ -29,6 +29,13 @@ def _fact(sid, concept, tag, end, value, form, accn, filed, start=None):
                          source="test", fetched_at=datetime.now(timezone.utc))
 
 
+def _edinet_doc(doc_id, sid, standard, period_end=date(2026, 3, 31), submitted="2026-06-20 15:00"):
+    from app.models import EdinetDocument
+    return EdinetDocument(doc_id=doc_id, security_id=sid, sec_code="00000", edinet_code="E0", filer_name="t", form_code="030000",
+                          doc_description="有価証券報告書", submitted_at=submitted, period_end=period_end,
+                          accounting_standard=standard, parse_status="parsed", detail={}, fetched_at=datetime.now(timezone.utc))
+
+
 def test_fred_switches_from_api_to_public_csv_when_key_rejected(client, monkeypatch):
     """FRED：APIキーが拒否されたら、公開CSVに切り替えて取得を続ける。"""
     calls = []
@@ -89,10 +96,13 @@ def test_balance_sheet_falls_back_to_edinet_when_jquants_has_no_value(client):
     """J-Quants（決算短信）に値がない期（Freeプランの範囲外・取得失敗）は、EDINET の報告値に切り替えて表示する。"""
     sid = _jp("3333")
     with SessionLocal() as s:
+        # 決算短信（日本基準）：損益だけ（貸借対照表の値を取得できなかった想定）。実際と同じく開示の記録とともに保存する
+        ingest_jquants_fins.store_records(s, [rec("T1", "33330", "2026-05-10", "FYFinancialStatements_Consolidated_JP", "FY",
+                                                  "2025-04-01", "2026-03-31", "2025-04-01", "2026-03-31", Sales=1000)],
+                                          {"3333": sid}, datetime.now(timezone.utc))
+        s.add(_edinet_doc("S1", sid, "JGAAP"))
         s.add_all([
-            # 決算短信：損益だけ（貸借対照表の値を取得できなかった想定）
-            _fact(sid, "revenue", "jquants:Sales", date(2026, 3, 31), 1000, "TANSHIN-FY", "T1", date(2026, 5, 10), start=date(2025, 4, 1)),
-            # EDINET の有価証券報告書：総資産・負債・純資産
+            # EDINET の有価証券報告書（日本基準）：総資産・負債・純資産
             _fact(sid, "assets", "edinet:jppfs_cor:Assets", date(2026, 3, 31), 5000, "EDINET-ASR", "S1", date(2026, 6, 20)),
             _fact(sid, "liabilities", "edinet:jppfs_cor:Liabilities", date(2026, 3, 31), 3000, "EDINET-ASR", "S1", date(2026, 6, 20)),
             _fact(sid, "net_assets", "edinet:jppfs_cor:NetAssets", date(2026, 3, 31), 2000, "EDINET-ASR", "S1", date(2026, 6, 20)),
@@ -111,8 +121,9 @@ def test_all_providers_down_shows_stored_data_as_stale(client):
     """すべての取得元が止まり更新されないまま時間がたったら、保存済みの値を「古いデータ」として表示する。"""
     sid = _jp("2222")
     with SessionLocal() as s:
-        s.add(_fact(sid, "revenue", "jquants:Sales", date(2026, 3, 31), 1000, "TANSHIN-FY", "T2", date(2026, 5, 10), start=date(2025, 4, 1)))
-        s.add(_fact(sid, "assets", "jquants:TA", date(2026, 3, 31), 5000, "TANSHIN-FY", "T2", date(2026, 5, 10)))
+        ingest_jquants_fins.store_records(s, [rec("T2", "22220", "2026-05-10", "FYFinancialStatements_Consolidated_JP", "FY",
+                                                  "2025-04-01", "2026-03-31", "2025-04-01", "2026-03-31", Sales=1000, TA=5000)],
+                                          {"2222": sid}, datetime.now(timezone.utc))
         s.add(IngestionRun(dataset="financials_jp", source="test", status="failed", rows=0, message="J-Quants 停止"))
         s.commit()
     fresh = client.get("/api/v1/securities/JP/2222/financials", params={"as_of": "2026-06-01"}).json()

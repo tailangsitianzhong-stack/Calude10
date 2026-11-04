@@ -70,6 +70,7 @@ def main() -> None:
     ap.add_argument("--codes", default=None, help="jquants_fins：銘柄コード（カンマ区切り）")
     ap.add_argument("--dates", default=None, help="jquants_fins：開示日 YYYY-MM-DD（カンマ区切り）")
     ap.add_argument("--max-dates", type=int, default=None, help="jquants_fins：1回に取得する開示日の数")
+    ap.add_argument("--quality-only", action="store_true", help="jquants_fins：API に接続せず、保存済みの開示から品質の記録だけを作る")
     a = ap.parse_args()
     init_db()
     log.info("start %s at %s", a.task, datetime.now(timezone.utc).isoformat())
@@ -90,7 +91,7 @@ def main() -> None:
         from datetime import date as _d
         job("jquants_fins", codes=[c.strip() for c in a.codes.split(",") if c.strip()] if a.codes else None,
             dates=[_d.fromisoformat(x.strip()) for x in a.dates.split(",") if x.strip()] if a.dates else None,
-            max_dates=a.max_dates)
+            max_dates=a.max_dates, quality_only=a.quality_only)
     else:
         job(a.task)
 

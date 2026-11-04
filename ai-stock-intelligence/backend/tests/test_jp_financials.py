@@ -257,3 +257,99 @@ def test_refetching_logged_dates_updates_log_instead_of_failing(client, monkeypa
         assert s.query(FetchLog).filter_by(key="2026-05-14").count() == 1
         assert s.query(FinancialFact).filter_by(accn="R1").count() == 1
     config.get_settings.cache_clear()
+
+
+# ---- 年度データは「その期の最新の通期の決算短信1件」だけで作る（2026-11-04、27社の問題の回帰テスト） ----
+FYJ, FYI = "FYFinancialStatements_Consolidated_JP", "FYFinancialStatements_Consolidated_IFRS"
+FY26 = dict(per="FY", per_st="2025-04-01", per_en="2026-03-31", fy_st="2025-04-01", fy_en="2026-03-31")
+
+
+def _fresh(code):
+    with SessionLocal() as s:
+        x = _jp(s, code)
+        s.commit()
+        return x.id
+
+
+def _snap(code, **kw):
+    from sqlalchemy import select
+    with SessionLocal() as s:
+        return snapshot(s, s.scalar(select(Security).where(Security.market == "JP", Security.code == code)), **kw)
+
+
+def test_standard_change_restatement_does_not_mix_jgaap_items(client):
+    """東京海上（8766）型：日本基準の決算短信の後に、同じ期を IFRS で作り直した決算短信が出た。
+    IFRS の行に、日本基準だけの経常利益や、IFRS の書類にない売上高を混ぜない。"""
+    _fresh("8766")
+    _store([rec("J", "87660", "2026-05-20", FYJ, disc_time="16:00:00", Sales=8872, OdP=1348, NP=980, TA=31961, Eq=5457, **FY26),
+            rec("I", "87660", "2026-06-26", FYI, disc_time="15:30:00", NP=531, TA=33002, Eq=8052, **FY26)])
+    row = _snap("8766")["annual"][-1]
+    assert row["accounting_standard"] == "IFRS" and row["disclosure"] == "I"
+    assert row["values"] == {"net_income": 531, "assets": 33002, "net_assets": 8052}
+    assert "ordinary_income" not in row["values"] and "revenue" not in row["values"]  # 「—」
+
+
+def test_correction_uses_only_corrected_disclosure_and_leaves_blanks(client):
+    """訂正開示：訂正後の最新の決算短信を使う。訂正後に記載のない項目は、訂正前の値で補わず「—」にする。"""
+    _fresh("1332")
+    _store([rec("A", "13320", "2026-05-14", FYJ, disc_time="12:00:00", Sales=1000, NP=70, EPS="2.19", BPS="100", **FY26),
+            rec("B", "13320", "2026-05-20", FYJ, disc_time="13:30:00", Sales=1010, NP=72, **FY26)])
+    row = _snap("1332")["annual"][-1]
+    assert row["disclosure"] == "B" and row["values"]["revenue"] == 1010 and row["values"]["net_income"] == 72
+    assert "eps_basic" not in row["values"] and "bps" not in row["values"]  # 訂正前の 2.19・100 は残らない
+    # 訂正の前の時点では、訂正前の決算短信の値（時点つき）
+    old = _snap("1332", as_of=date(2026, 5, 15))["annual"][-1]
+    assert old["disclosure"] == "A" and old["values"]["eps_basic"] == 2.19
+
+
+def test_fiscal_year_change_period_is_not_annual_and_is_recorded(client):
+    """決算期変更（2901 型：2025-04-01〜08-31 の5か月）の通期の決算短信は、年度データにせず、品質の記録に残す。"""
+    _fresh("2901")
+    _store([rec("F1", "29010", "2025-10-14", FYJ, "FY", "2024-09-01", "2025-08-31", "2024-09-01", "2025-08-31", Sales=1305, CFO=-253),
+            rec("F2", "29010", "2025-12-01", FYJ, "FY", "2025-04-01", "2025-08-31", "2025-04-01", "2025-08-31", Sales=500, CFO=-201)])
+    row = _snap("2901")["annual"][-1]
+    assert row["disclosure"] == "F1" and row["values"]["cfo"] == -253  # 5か月の値を年度として出さない
+    with SessionLocal() as s:
+        assert ING.record_irregular_periods(s) == 1 and ING.record_irregular_periods(s) == 0  # 重複して記録しない
+        q = s.query(DataQualityCheck).filter_by(dataset="jquants_fins", check_type="irregular_period").one()
+        assert q.detail["disc_no"] == "F2" and q.detail["days"] == 152
+
+
+def test_edinet_liabilities_only_from_same_accounting_standard(client):
+    """EDINET の負債は、採用した決算短信と同じ会計基準の書類の値だけを使う。"""
+    from app.models import EdinetDocument
+    sid = _fresh("7777")
+    _store([rec("Q", "77770", "2026-05-10", FYI, Sales=100, NP=10, TA=500, Eq=200, **FY26)])
+    with SessionLocal() as s:
+        for doc, std, val in (("EJ", "JGAAP", 111), ("EI", "IFRS", 300)):
+            s.add(EdinetDocument(doc_id=doc, security_id=sid, sec_code="77770", edinet_code="E", filer_name="t", form_code="030000",
+                                 doc_description="有報", submitted_at="2026-06-20 15:00", period_end=date(2026, 3, 31),
+                                 accounting_standard=std, parse_status="parsed", detail={}, fetched_at=datetime.now(timezone.utc)))
+            s.add(FinancialFact(security_id=sid, concept="liabilities", tag="edinet:x:Liabilities", unit="JPY", period_start=None,
+                                period_end=date(2026, 3, 31), fiscal_year=2026, fiscal_period="FY", form="EDINET-ASR", accn=doc,
+                                filed=date(2026, 6, 20 if std == "IFRS" else 25), value=val, source="EDINET",
+                                fetched_at=datetime.now(timezone.utc)))
+        s.commit()
+    snap = _snap("7777")
+    assert snap["annual"][-1]["values"]["liabilities"] == 300  # 日本基準の書類（提出は後）の 111 は使わない
+    assert snap["balance"]["values"]["liabilities"] == 300 and snap["balance"]["values"]["assets"] == 500
+
+
+def test_ttm_uses_single_disclosures(client):
+    """直近4四半期：年度・当年の累計・前年同期は、それぞれ1件の決算短信の値だけ。前年同期の訂正では訂正後を使う。"""
+    _fresh("5050")
+    Q = "1QFinancialStatements_Consolidated_JP"
+    _store([rec("FY", "50500", "2026-05-10", FYJ, Sales=1000, NP=100, **FY26),
+            rec("P0", "50500", "2025-08-05", Q, "1Q", "2025-04-01", "2025-06-30", "2025-04-01", "2026-03-31", Sales=240, NP=20),
+            rec("P1", "50500", "2025-08-20", Q, "1Q", "2025-04-01", "2025-06-30", "2025-04-01", "2026-03-31", Sales=250),  # 訂正（NP 記載なし）
+            rec("C", "50500", "2026-08-05", Q, "1Q", "2026-04-01", "2026-06-30", "2026-04-01", "2027-03-31", Sales=300, NP=35)])
+    t = _snap("5050")["ttm"]
+    assert t["values"] == {"revenue": 1000 + 300 - 250}  # 純利益は前年同期（訂正後）に記載がないため計算しない
+
+
+def test_reit_six_month_periods_are_not_recorded_as_fiscal_year_change(client):
+    _fresh("8951")
+    _store([rec("R", "89510", "2026-05-15", "FYFinancialStatements_Consolidated_REIT", "FY", "2025-10-01", "2026-03-31",
+                "2025-10-01", "2026-03-31", Sales=100)])
+    with SessionLocal() as s:
+        assert ING.record_irregular_periods(s) == 0
