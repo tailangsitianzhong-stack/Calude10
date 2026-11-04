@@ -225,3 +225,184 @@ def test_failed_fetch_never_blanks_existing_liabilities(client, monkeypatch):
     with SessionLocal() as s:
         vals = [f.value for f in s.query(FinancialFact).filter_by(security_id=sid, concept="liabilities")]
         assert vals == [3000]  # 既存の値はそのまま。空欄・ゼロの行は作らない
+
+
+# ---- 全銘柄展開のための機能：対象の指定・書類一覧を取得済みの日付・1バッチの上限 ----
+
+def _jp_sec(code, typ="common", active=True):
+    with SessionLocal() as s:
+        x = Security(market="JP", code=code, name=code, name_search=code, security_type=typ, is_active=active,
+                     source="t", fetched_at=datetime.now(timezone.utc))
+        s.add(x)
+        s.commit()
+        return x.id
+
+
+def _m(doc, sec5, submitted="2026-06-22 15:00"):
+    return {**_meta(doc, submitted=submitted), "secCode": sec5}
+
+
+class Counting(FakeClient):
+    lists = 0
+    downloads = 0
+
+    def documents(self, d):
+        Counting.lists += 1
+        return self.listing.get(d, [])
+
+    def csv_package(self, doc_id):
+        Counting.downloads += 1
+        return super().csv_package(doc_id)
+
+
+def _setup_batch(monkeypatch):
+    from app import config
+    monkeypatch.setenv("EDINET_API_KEY", "test-key")
+    config.get_settings.cache_clear()
+    monkeypatch.setattr(E, "EdinetClient", Counting)
+    Counting.lists = Counting.downloads = 0
+    Counting.fail = set()
+    pkg = package([row("jppfs_cor:Liabilities", "CurrentYearInstant", 10)])
+    Counting.pkgs = {d: pkg for d in ("A1", "A2", "A3", "B1", "E1", "R1")}
+
+
+def test_all_listed_targets_only_active_japanese_common(client, monkeypatch):
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    _jp_sec("167A")                      # 英字を含むコード
+    _jp_sec("2222", typ="etf")           # 対象外
+    _jp_sec("3333", active=False)        # 上場廃止：対象外
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110"), _m("A2", "167A0"), _m("E1", "22220"), _m("R1", "33330")]}
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))
+    assert r.status == "success" and "'targets': 2" in r.message and "上限 200 件" in r.source
+    with SessionLocal() as s:
+        assert {d.doc_id for d in s.query(EdinetDocument)} == {"A1", "A2"}
+
+
+def test_listed_dates_are_logged_and_not_relisted(client, monkeypatch):
+    from app.models import FetchLog
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110")], date(2026, 6, 23): [_m("A2", "11110")]}
+    ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 23))
+    assert Counting.lists == 2
+    with SessionLocal() as s:
+        assert {l.key for l in s.query(FetchLog).filter_by(dataset="edinet_list")} == {"2026-06-22", "2026-06-23"}
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 23))
+    assert Counting.lists == 2 and "'dates_skipped_listed': 2" in r.message  # 2回目は書類一覧を取り直さない
+    # 銘柄を指定した実行は、取得済みの日付を記録しない（他の会社の書類を処理していないため）
+    ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 24), end=date(2026, 6, 24))
+    with SessionLocal() as s:
+        assert s.query(FetchLog).filter_by(dataset="edinet_list", key="2026-06-24").count() == 0
+
+
+def test_max_docs_stops_mid_date_and_resumes(client, monkeypatch):
+    from app.models import FetchLog
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110"), _m("A2", "11110"), _m("A3", "11110")],
+                        date(2026, 6, 23): [_m("B1", "11110")]}
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 23), max_docs=2)
+    assert Counting.downloads == 2 and "'limit_reached': True" in r.message
+    with SessionLocal() as s:
+        assert s.query(FetchLog).filter_by(dataset="edinet_list").count() == 0  # 途中の日は「処理済み」にしない
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 23), max_docs=2)
+    assert Counting.downloads == 4  # 残りの A3 と B1 だけ（A1・A2 はスキップ）
+    with SessionLocal() as s:
+        assert {d.doc_id for d in s.query(EdinetDocument)} == {"A1", "A2", "A3", "B1"}
+        assert {l.key for l in s.query(FetchLog).filter_by(dataset="edinet_list")} == {"2026-06-22", "2026-06-23"}
+        assert s.query(FinancialFact).filter_by(concept="liabilities").count() == 4  # 重複なし
+
+
+def test_failed_documents_are_retried_without_relisting(client, monkeypatch):
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110")]}
+    Counting.fail = {"A1"}
+    ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))
+    lists_after_first = Counting.lists
+    Counting.fail = set()
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))
+    assert Counting.lists == lists_after_first and "'documents_retried': 1" in r.message  # 一覧は取り直さず再試行
+    with SessionLocal() as s:
+        assert s.get(EdinetDocument, "A1").parse_status == "parsed"
+
+
+def test_auth_error_does_not_mark_dates(client, monkeypatch):
+    from app.models import FetchLog
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+
+    class Denied(Counting):
+        def documents(self, d):
+            raise E.EdinetAuthError("EDINET の認証に失敗しました（401）")
+
+    monkeypatch.setattr(E, "EdinetClient", Denied)
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 23))
+    assert r.status == "failed"
+    with SessionLocal() as s:
+        assert s.query(FetchLog).filter_by(dataset="edinet_list").count() == 0
+
+
+# ---- PR #7 のレビューで追加した確認 ----
+
+def test_auth_error_while_downloading_stops_without_marking_date_or_failing_docs(client, monkeypatch):
+    """書類の取得中に 401：その日を「処理済み」にせず、書類も「失敗」と記録しない。キーが直れば次の実行で取得できる。"""
+    from app.models import FetchLog
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110"), _m("A2", "11110")]}
+
+    class KeyRevoked(Counting):
+        def csv_package(self, doc_id):
+            raise E.EdinetAuthError("EDINET の認証に失敗しました（401）")
+
+    monkeypatch.setattr(E, "EdinetClient", KeyRevoked)
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))
+    assert r.status == "failed" and "'auth_error': True" in r.message
+    with SessionLocal() as s:
+        assert s.query(FetchLog).filter_by(dataset="edinet_list").count() == 0
+        assert s.query(EdinetDocument).count() == 0  # 認証の失敗を書類の失敗として残さない
+    monkeypatch.setattr(E, "EdinetClient", Counting)
+    ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))
+    with SessionLocal() as s:
+        assert {d.doc_id for d in s.query(EdinetDocument)} == {"A1", "A2"}
+
+
+def test_max_docs_counts_retries_and_new_documents_together(client, monkeypatch):
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110"), _m("A2", "11110")],
+                        date(2026, 6, 23): [_m("A3", "11110"), _m("B1", "11110")]}
+    Counting.fail = {"A1", "A2"}
+    ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))  # A1・A2 が失敗
+    Counting.fail = set()
+    Counting.downloads = 0
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 23), max_docs=3)
+    assert Counting.downloads == 3 and "'documents_retried': 2" in r.message and "'limit_reached': True" in r.message
+    with pytest.raises(ValueError):
+        ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22), max_docs=0)
+
+
+def test_document_failing_on_retry_is_not_tried_twice_in_same_run(client, monkeypatch):
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110")]}
+    Counting.fail = {"A1"}
+    ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 22), end=date(2026, 6, 22))
+    Counting.downloads = 0
+    ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 22), end=date(2026, 6, 22))  # まだ失敗する
+    assert Counting.downloads == 1  # 再試行の1回だけ（同じ実行で書類一覧から2回目は試さない）
+
+
+def test_other_companies_documents_are_ignored_and_rerun_adds_nothing(client, monkeypatch):
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("A1", "11110"), _m("Z9", "99980")]}  # 99980 は銘柄一覧にない
+    ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22))
+    with SessionLocal() as s:
+        counts = (s.query(EdinetDocument).count(), s.query(FinancialFact).count(), s.query(DataQualityCheck).count())
+        assert counts[0] == 1
+    ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 22), end=date(2026, 6, 22))  # 同じ日を銘柄指定でも
+    with SessionLocal() as s:
+        assert (s.query(EdinetDocument).count(), s.query(FinancialFact).count(), s.query(DataQualityCheck).count()) == counts
