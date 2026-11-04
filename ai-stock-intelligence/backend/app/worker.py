@@ -65,6 +65,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("task", choices=["fred", "sec", "jquants", "us_prices", "jquants_fins", "edinet", "all", "schedule"])
     ap.add_argument("--start", default=None, help="edinet：提出日の開始 YYYY-MM-DD")
+    ap.add_argument("--recheck", action="store_true", help="edinet：API に接続せず、保存済みの値から照合の品質の記録を作り直す")
     ap.add_argument("--end", default=None, help="edinet：提出日の終了 YYYY-MM-DD")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--codes", default=None, help="jquants_fins：銘柄コード（カンマ区切り）")
@@ -83,10 +84,13 @@ def main() -> None:
         job("sec", limit=a.limit)
     elif a.task == "edinet":
         from datetime import date as _d
-        if not (a.codes and a.start and a.end):
-            ap.error("edinet には --codes・--start・--end が必要です（全銘柄の一括取得は行わない）")
-        job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()],
-            start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end))
+        if a.recheck:
+            job("edinet", recheck_only=True)
+        else:
+            if not (a.codes and a.start and a.end):
+                ap.error("edinet には --codes・--start・--end が必要です（全銘柄の一括取得は行わない）")
+            job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()],
+                start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end))
     elif a.task == "jquants_fins":
         from datetime import date as _d
         job("jquants_fins", codes=[c.strip() for c in a.codes.split(",") if c.strip()] if a.codes else None,

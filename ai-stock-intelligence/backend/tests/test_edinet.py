@@ -121,13 +121,13 @@ def test_ingest_stores_reported_liabilities_idempotent_and_cross_checks(client, 
     from tests.test_jp_financials import rec
     with SessionLocal() as s:  # 同じ期末の決算短信（J-Quants）
         store_records(s, [rec("D1", "99990", "2026-05-10", "FYFinancialStatements_Consolidated_JP", "FY", "2025-04-01",
-                              "2026-03-31", "2025-04-01", "2026-03-31", Sales=1000, TA=5000, Eq=2000)],
+                              "2026-03-31", "2025-04-01", "2026-03-31", Sales=1000, TA=5_000_000_000, Eq=2_000_000_000)],
                       {"9999": sid}, datetime.now(timezone.utc))
         s.commit()
     FakeClient.listing = {date(2026, 6, 22): [_meta("S1")]}
     FakeClient.pkgs = {"S1": package([row("jppfs_cor:Liabilities", "CurrentYearInstant", 3000),
-                                      row("jppfs_cor:Assets", "CurrentYearInstant", 5000),
-                                      row("jppfs_cor:NetAssets", "CurrentYearInstant", 2100)])}  # 純資産だけ食い違う
+                                      row("jppfs_cor:Assets", "CurrentYearInstant", 5_000_400_000),     # 百万円未満の差＝丸め
+                                      row("jppfs_cor:NetAssets", "CurrentYearInstant", 2_500_000_000)])}  # 5億円の食い違い
     FakeClient.fail = set()
     r = ING.run(SessionLocal(), ["9999"], date(2026, 6, 22), date(2026, 6, 22))
     assert r.status == "success" and r.rows == 3
@@ -163,3 +163,65 @@ def test_failed_document_is_recorded_and_retried_and_key_not_leaked(client, monk
 
 def test_skipped_without_key(client):
     assert ING.run(SessionLocal(), ["7203"], date(2026, 6, 1), date(2026, 6, 2)).status == "skipped"
+
+
+def test_cross_check_uses_same_standard_rounding_and_records_unavailable_liabilities(client, monkeypatch):
+    """実データの検証で見つけた点：
+    - 東京海上（8766）：IFRS の有報を、作り直し前の日本基準の決算短信と比べて「不一致」にしていた → 同じ基準とだけ比べる
+    - 4263：決算短信は百万円未満を切り捨て（4,218,107,000 → 4,218,000,000）→ 百万円未満の差は「表示単位の丸め」
+    - オリックス（8591・米国基準）：EDINET の CSV に負債の合計の要素がない → 品質の記録に残し、値は作らない"""
+    sid = _setup(monkeypatch)
+    from app.services.ingest_jquants_fins import store_records
+    from tests.test_jp_financials import rec
+    with SessionLocal() as s:
+        store_records(s, [rec("J", "99990", "2026-05-20", "FYFinancialStatements_Consolidated_JP", "FY", "2025-04-01", "2026-03-31",
+                              "2025-04-01", "2026-03-31", TA=31_961_000_000, Eq=5_457_000_000),
+                          rec("I", "99990", "2026-06-26", "FYFinancialStatements_Consolidated_IFRS", "FY", "2025-04-01", "2026-03-31",
+                              "2025-04-01", "2026-03-31", TA=33_002_000_000, Eq=8_052_000_000)], {"9999": sid}, datetime.now(timezone.utc))
+        s.commit()
+    FakeClient.fail = set()
+    FakeClient.listing = {date(2026, 6, 29): [_meta("SI"), _meta("SU", form="043A00")]}
+    FakeClient.pkgs = {
+        "SI": package([row("jpigp_cor:LiabilitiesIFRS", "CurrentYearInstant", 24_950_000_000, "その他"),
+                       row("jpigp_cor:AssetsIFRS", "CurrentYearInstant", 33_002_651_000, "その他"),
+                       row("jpigp_cor:EquityIFRS", "CurrentYearInstant", 8_052_371_000, "その他")], {"AccountingStandardsDEI": "IFRS"}),
+        "SU": package([row("jpcrp_cor:TotalAssetsUSGAAPSummaryOfBusinessResults", "InterimInstant", 1, "その他")],
+                      {"AccountingStandardsDEI": "US GAAP", "CurrentPeriodEndDateDEI": "2025-09-30"}),
+    }
+    r = ING.run(SessionLocal(), ["9999"], date(2026, 6, 29), date(2026, 6, 29))
+    assert r.status == "success"
+    with SessionLocal() as s:
+        assert s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="inconsistent").count() == 0
+        d = s.get(EdinetDocument, "SI").detail["cross_check"]
+        assert {c["result"] for c in d} == {"表示単位の丸め"} and {c["jquants_disclosure"] for c in d} == {"I"}
+        u = s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="liabilities_unavailable").one()
+        assert u.detail["doc_id"] == "SU" and "米国基準" in u.detail["reason"]
+        assert s.query(FinancialFact).filter_by(accn="SU").count() == 0  # 値は作らない
+        before = s.query(FinancialFact).count()
+    # 再照合（API なし）：品質の記録だけを作り直し、財務の値は変えない
+    r = ING.run(SessionLocal(), recheck_only=True)
+    assert r.status == "success" and "'mismatch': 0" in r.message and "'unavailable': 1" in r.message
+    with SessionLocal() as s:
+        assert s.query(FinancialFact).count() == before
+        assert s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="liabilities_unavailable").count() == 1
+
+
+def test_failed_fetch_never_blanks_existing_liabilities(client, monkeypatch):
+    """EDINET から取得できなかった場合も、既存の負債の値を空欄・ゼロで上書きしない（追記のみ）。"""
+    sid = _setup(monkeypatch)
+    with SessionLocal() as s:
+        s.add(FinancialFact(security_id=sid, concept="liabilities", tag="edinet:jppfs_cor:Liabilities", unit="JPY", period_start=None,
+                            period_end=date(2026, 3, 31), fiscal_year=2026, fiscal_period="FY", form="EDINET-ASR", accn="OLD",
+                            filed=date(2026, 6, 20), value=3000, source="EDINET", fetched_at=datetime.now(timezone.utc)))
+        s.commit()
+    FakeClient.listing = {date(2026, 6, 30): [_meta("NEW")]}
+    FakeClient.pkgs = {"NEW": b"broken"}
+    FakeClient.fail = {"NEW"}
+    r = ING.run(SessionLocal(), ["9999"], date(2026, 6, 30), date(2026, 6, 30))
+    assert r.status == "failed"
+    FakeClient.fail = set()
+    FakeClient.pkgs = {"NEW": package([row("jppfs_cor:Assets", "CurrentYearInstant", 5000)])}  # 負債の要素がない書類
+    ING.run(SessionLocal(), ["9999"], date(2026, 6, 30), date(2026, 6, 30))
+    with SessionLocal() as s:
+        vals = [f.value for f in s.query(FinancialFact).filter_by(security_id=sid, concept="liabilities")]
+        assert vals == [3000]  # 既存の値はそのまま。空欄・ゼロの行は作らない

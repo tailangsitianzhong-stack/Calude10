@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import DataQualityCheck, EdinetDocument, FinancialFact, IngestionRun, Security
+from ..models import DataQualityCheck, EdinetDocument, FinancialFact, IngestionRun, JpDisclosure, Security
 from ..providers import edinet
 from ..providers.http import redact
 
@@ -41,29 +41,86 @@ def store_document(session: Session, meta: dict, parsed: dict, sid: int, now: da
     return added, existing
 
 
-def cross_check(session: Session, sid: int, code: str, parsed: dict) -> list[dict]:
-    """同じ期末の J-Quants の総資産・純資産と比べる。食い違いは品質の記録にする。"""
+ROUNDING_YEN = 1_000_000  # 決算短信は百万円未満を切り捨てた値のことがある（実データ：4263 の総資産 4,218,107,000円 → 4,218,000,000円）
+
+
+def cross_check(session: Session, sid: int, code: str, period_end: date, values: dict, standard: str | None,
+                record: bool = True) -> list[dict]:
+    """同じ期末・同じ会計基準の J-Quants（決算短信）の総資産・純資産と比べる（基準の違う決算短信とは比べない）。
+    差が百万円未満なら「表示単位の丸め」として一致扱い。それ以上の食い違いは品質の記録（inconsistent）にする。"""
     out = []
     for concept in ("assets", "net_assets"):
-        if concept not in parsed["values"]:
+        if concept not in values:
             continue
-        jq = session.scalars(select(FinancialFact.value).where(
-            FinancialFact.security_id == sid, FinancialFact.period_end == parsed["period_end"],
-            FinancialFact.concept == concept, FinancialFact.tag.like("jquants:%"))).all()
-        ev = parsed["values"][concept]["value"]
-        for v in set(jq):
-            ok = abs(v - ev) <= 1.0
-            out.append({"concept": concept, "edinet": ev, "jquants": v, "match": ok})
-            if not ok:
-                session.add(DataQualityCheck(dataset=QUALITY, subject=code, check_type="inconsistent", severity="warn",
-                                             detail={"concept": concept, "period_end": str(parsed["period_end"]),
-                                                     "edinet": ev, "jquants": v}))
+        rows = session.execute(
+            select(FinancialFact.value, FinancialFact.accn, JpDisclosure.disc_date, JpDisclosure.disc_time)
+            .join(JpDisclosure, JpDisclosure.disc_no == FinancialFact.accn)
+            .where(FinancialFact.security_id == sid, FinancialFact.period_end == period_end, FinancialFact.concept == concept,
+                   FinancialFact.tag.like("jquants:%"), JpDisclosure.accounting_standard == standard)).all()
+        if not rows:
+            continue
+        v, accn, *_ = max(rows, key=lambda r: (r[2], r[3] or ""))  # 同じ基準の最新の決算短信
+        ev = values[concept]["value"]
+        diff = abs(v - ev)
+        result = "一致" if diff <= 1.0 else ("表示単位の丸め" if diff < ROUNDING_YEN else "不一致")
+        out.append({"concept": concept, "edinet": ev, "jquants": v, "jquants_disclosure": accn, "result": result,
+                    "match": result != "不一致"})
+        if result == "不一致" and record:
+            session.add(DataQualityCheck(dataset=QUALITY, subject=code, check_type="inconsistent", severity="warn",
+                                         detail={"concept": concept, "period_end": str(period_end), "standard": standard,
+                                                 "edinet": ev, "jquants": v, "jquants_disclosure": accn}))
     return out
 
 
-def run(session: Session, codes: list[str], start: date, end: date) -> IngestionRun:
-    """codes（4桁の証券コード）について、start〜end に提出された決算書類を取得する。"""
+UNAVAILABLE_REASON = {
+    "USGAAP": "米国基準の会社は、EDINET の CSV に負債の合計の要素がない（経営指標等の総資産・株主資本だけ）。計算では補わない",
+}
+
+
+def record_unavailable(session: Session, code: str, doc_id: str, standard: str | None, values: dict) -> bool:
+    """書類から負債の合計を取り出せなかったことを品質の記録に残す（既存の値は変えない）。"""
+    if "liabilities" in values:
+        return False
+    session.add(DataQualityCheck(dataset=QUALITY, subject=code, check_type="liabilities_unavailable", severity="info",
+                                 detail={"doc_id": doc_id, "standard": standard,
+                                         "reason": UNAVAILABLE_REASON.get(standard or "", "負債の合計の要素が見つからない")}))
+    return True
+
+
+def recheck(session: Session) -> dict:
+    """保存済みの EDINET の値から、照合と「負債を取り出せなかった」の品質の記録を作り直す（API には接続しない）。
+    財務の値（financial_facts）は変更しない。品質の記録（dataset=edinet の inconsistent・liabilities_unavailable）だけを置き換える。"""
+    from sqlalchemy import delete
+    session.execute(delete(DataQualityCheck).where(DataQualityCheck.dataset == QUALITY,
+                                                   DataQualityCheck.check_type.in_(("inconsistent", "liabilities_unavailable"))))
+    stats = {"documents": 0, "checks": 0, "mismatch": 0, "rounding": 0, "unavailable": 0}
+    for doc in session.scalars(select(EdinetDocument).where(EdinetDocument.parse_status == "parsed")):
+        code = doc.sec_code[:4]
+        vals = {f.concept: {"value": f.value} for f in session.scalars(
+            select(FinancialFact).where(FinancialFact.accn == doc.doc_id, FinancialFact.source == SOURCE))}
+        checks = cross_check(session, doc.security_id, code, doc.period_end, vals, doc.accounting_standard)
+        stats["documents"] += 1
+        stats["checks"] += len(checks)
+        stats["mismatch"] += sum(c["result"] == "不一致" for c in checks)
+        stats["rounding"] += sum(c["result"] == "表示単位の丸め" for c in checks)
+        stats["unavailable"] += record_unavailable(session, code, doc.doc_id, doc.accounting_standard, vals)
+        doc.detail = {**(doc.detail or {}), "cross_check": checks}
+    session.commit()
+    return stats
+
+
+def run(session: Session, codes: list[str] | None = None, start: date | None = None, end: date | None = None,
+        recheck_only: bool = False) -> IngestionRun:
+    """codes（4桁の証券コード）について、start〜end に提出された決算書類を取得する。
+    recheck_only なら API に接続せず、保存済みの値から品質の記録を作り直す。"""
     st = get_settings()
+    if recheck_only:
+        stats = recheck(session)
+        r = IngestionRun(dataset=DATASET, source="保存済みの EDINET の値の再照合（API接続なし）", status="success", rows=0,
+                         message=str(stats), finished_at=datetime.now(timezone.utc))
+        session.add(r)
+        session.commit()
+        return r
     run = IngestionRun(dataset=DATASET, source="EDINET API v2（書類一覧・CSV）", status="running")
     session.add(run)
     session.commit()
@@ -107,7 +164,9 @@ def run(session: Session, codes: list[str], start: date, end: date) -> Ingestion
                     try:
                         parsed = edinet.parse_csv_package(client.csv_package(meta["docID"]))
                         added, existing = store_document(session, meta, parsed, sec.id, now)
-                        checks = cross_check(session, sec.id, sec.code, parsed)
+                        checks = cross_check(session, sec.id, sec.code, parsed["period_end"], parsed["values"],
+                                             parsed["accounting_standard"])
+                        record_unavailable(session, sec.code, meta["docID"], parsed["accounting_standard"], parsed["values"])
                         session.add(EdinetDocument(
                             doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),
                             filer_name=meta.get("filerName"), form_code=meta["formCode"], doc_description=meta.get("docDescription"),
