@@ -68,7 +68,7 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     const jpBar = await page.getByTestId("bar-prices_jp").innerText();
     assert(/日本株の株価/.test(jpBar) && (/未接続/.test(jpBar) || /\d{4}\/\d{2}\/\d{2}まで/.test(jpBar)),
       `上部の状態バーに日本株の株価の状態（未接続 または 最新データの日付）がない：${jpBar}`);
-    assert(/仮設定/.test(bar), "SECの連絡先が仮設定である警告がない");
+    assert(!/仮設定/.test(bar), "SECの連絡先に「仮設定」の表示が残っている");
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/dashboard-${label}.png`, fullPage: true });
   });

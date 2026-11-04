@@ -92,10 +92,19 @@ def ingest_company(session: Session, client: sec.SecClient, s: Security) -> int:
     return added
 
 
+SEC_UA_MISSING = "SEC_USER_AGENT が未設定（アプリ名と連絡先メールアドレスが必要）のため、SEC から取得していません"
+
+
 def run(session: Session, limit: int | None = None) -> IngestionRun:
     st = get_settings()
-    run = IngestionRun(dataset="sec_financials", source="SEC EDGAR XBRL companyfacts", status="running",
-                       message="User-Agent が仮設定" if st.sec_ua_is_provisional else None)
+    if not st.sec_ua_configured:
+        # 仮の連絡先では SEC に接続しない（SEC の規則）。取得しなかったことを記録だけする
+        run = IngestionRun(dataset="sec_financials", source="SEC EDGAR XBRL companyfacts", status="failed", rows=0,
+                           message=SEC_UA_MISSING, finished_at=datetime.now(timezone.utc))
+        session.add(run)
+        session.commit()
+        return run
+    run = IngestionRun(dataset="sec_financials", source="SEC EDGAR XBRL companyfacts", status="running")
     session.add(run)
     session.commit()
     client = sec.SecClient(st.sec_ua)
@@ -120,8 +129,7 @@ def run(session: Session, limit: int | None = None) -> IngestionRun:
     run = session.get(IngestionRun, run.id)
     run.rows, run.finished_at = added, datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if done else "failed")
-    msgs = (["User-Agent が仮設定（専用の連絡先に変更してください）"] if st.sec_ua_is_provisional else []) + errors[:5]
-    run.message = ("; ".join(msgs))[:1000] or None
+    run.message = ("; ".join(errors[:5]))[:1000] or None
     run.source_as_of = session.scalar(select(func.max(FinancialFact.filed)))
     session.commit()
     return run

@@ -32,7 +32,7 @@ def test_env_names_are_read(clean_env):
     assert (s.jquants_api_key, s.jquants_plan, s.us_price_provider, s.tiingo_api_key) == ("jq", "light", "tiingo", "ti")
     assert (s.fred_api_key, s.edinet_api_key, s.anthropic_api_key, s.massive_api_key) == ("fr", "ed", "an", "ma")
     assert s.massive_base_url == "https://api.massive.com" and s.sec_universe_size == 300 and s.sec_extra_tickers == "KO,PEP"
-    assert s.sec_ua_is_provisional is False
+    assert s.sec_ua_configured is True and s.sec_ua == "AI-STOCK-INTELLIGENCE/0.3 me@mydomain.jp"
 
 
 def test_polygon_name_used_even_if_empty_massive_line_in_env_file(clean_env, tmp_path):
@@ -60,10 +60,21 @@ def test_invalid_values_are_rejected(clean_env):
         make()
 
 
-def test_sec_user_agent_without_contact_is_provisional(clean_env):
-    assert make().sec_ua_is_provisional is True
-    clean_env.setenv("SEC_USER_AGENT", "AI-STOCK-INTELLIGENCE")
-    assert make().sec_ua_is_provisional is True
+def test_sec_user_agent_has_no_provisional_fallback(clean_env):
+    s = make()
+    assert s.sec_ua == "" and s.sec_ua_configured is False  # 仮の値で埋めない
+    for bad in ("AI-STOCK-INTELLIGENCE", "me@mydomain.jp", "AI-STOCK-INTELLIGENCE/0.3 provisional-contact@example.com",
+                "AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン", "   "):
+        clean_env.setenv("SEC_USER_AGENT", bad)
+        assert make().sec_ua_configured is False, bad
+    clean_env.setenv("SEC_USER_AGENT", "  MyApp me@mydomain.jp  ")
+    assert make().sec_ua_configured is True and make().sec_ua == "MyApp me@mydomain.jp"
+
+
+def test_sec_ingestion_does_not_connect_without_user_agent(clean_env):
+    from app.providers import sec
+    with pytest.raises(ValueError):
+        sec.SecClient("")
 
 
 def test_env_file_in_project_root_is_read(clean_env, tmp_path):
@@ -136,3 +147,12 @@ def test_network_secret_mode_marks_configured_and_sends_no_auth_header(clean_env
     assert "authorization" not in mc.http.client.headers
     with pytest.raises(ValueError):
         jquants.JQuantsClient("", "free")  # キーもネットワークシークレットもない場合は従来どおりエラー
+
+
+def test_environment_variable_wins_over_empty_line_in_env_file(clean_env, tmp_path):
+    # クラウド環境の設定などで登録した環境変数が、.env の空行「SEC_USER_AGENT=」で消されないこと
+    f = tmp_path / ".env"
+    f.write_text("SEC_USER_AGENT=\n", encoding="utf-8")
+    assert Settings(_env_file=(f,)).sec_ua_configured is False
+    clean_env.setenv("SEC_USER_AGENT", "MyApp me@mydomain.jp")
+    assert Settings(_env_file=(f,)).sec_ua_configured is True

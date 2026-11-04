@@ -7,14 +7,17 @@
   3. 実行時のカレントディレクトリの .env（任意）
 実際の環境変数（Docker の env_file など）は .env より優先される。
 """
+import re
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# SECの規則：User-Agentにアプリ名と連絡先を含める。専用アドレスが決まるまでの仮設定（画面に「仮設定」と表示）
-SEC_PROVISIONAL_UA = "AI-STOCK-INTELLIGENCE/0.3 provisional-contact@example.com"
+# SECの規則：User-Agent にアプリ名と連絡先（メールアドレス）を含める。
+# 仮の値では接続しない：SEC_USER_AGENT が未設定・連絡先なし・例示用ドメインのときは SEC から取得しない
+_EMAIL = re.compile(r"[^\s@<>]+@[^\s@<>]+\.[A-Za-z]{2,}")
+_PLACEHOLDER_DOMAINS = ("example.com", "example.org", "example.net", "ドメイン")
 
 _BACKEND = Path(__file__).resolve().parents[1]
 ENV_FILES = (_BACKEND.parent / ".env", _BACKEND / ".env", Path(".env"))
@@ -119,12 +122,16 @@ class Settings(BaseSettings):
 
     @property
     def sec_ua(self) -> str:
-        return self.sec_user_agent.strip() or SEC_PROVISIONAL_UA
+        return self.sec_user_agent.strip()
 
     @property
-    def sec_ua_is_provisional(self) -> bool:
-        ua = self.sec_ua.lower()
-        return "example.com" in ua or "provisional" in ua or "@" not in ua
+    def sec_ua_configured(self) -> bool:
+        """アプリ名と実在しうる連絡先メールアドレスを含むか（値そのものは画面にもログにも出さない）。"""
+        ua = self.sec_ua
+        m = _EMAIL.search(ua)
+        if not m or not ua.replace(m.group(0), "").strip():
+            return False  # メールアドレスがない、またはアプリ名がない
+        return not any(d in m.group(0).lower() for d in _PLACEHOLDER_DOMAINS)
 
 
 @lru_cache

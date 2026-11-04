@@ -48,8 +48,10 @@ def dataset_status(session: Session) -> list[dict]:
         if key == "prices_jp":
             delay = jquants.DELAY_NOTE.get(st.jquants_plan, "") if st.has_credential("jquants") else "未接続"
         configured = {"prices_jp": st.has_credential("jquants"),
-                      "prices_us": bool(st.us_price_provider and st.has_credential(st.us_price_provider))}.get(key, True)
-        if not configured:
+                      "prices_us": bool(st.us_price_provider and st.has_credential(st.us_price_provider)),
+                      "sec_financials": st.sec_ua_configured}.get(key, True)
+        # SEC は設定がなくなっても、過去に取得した財務データは表示する（更新が止まっている旨を警告する）
+        if not configured and (key != "sec_financials" or not rows):
             status = "not_connected"
         elif ok_run is None and not rows:
             status = "not_connected"
@@ -63,8 +65,8 @@ def dataset_status(session: Session) -> list[dict]:
         issues = session.scalar(select(func.count()).select_from(DataQualityCheck).where(
             DataQualityCheck.dataset == key.split("_")[0] if key in ("fred", "sec_financials") else DataQualityCheck.dataset == key)) or 0
         warnings = []
-        if key == "sec_financials" and st.sec_ua_is_provisional:
-            warnings.append("SECへの連絡先（User-Agent）が仮設定です。専用のメールアドレスに変更してください")
+        if key == "sec_financials" and not st.sec_ua_configured:
+            warnings.append("SEC_USER_AGENT（アプリ名と連絡先メールアドレス）が未設定のため、SECの財務データを更新していません")
         if key == "prices_jp" and st.jquants_refresh_token and not st.has_credential("jquants"):
             warnings.append("JQUANTS_REFRESH_TOKEN（V1）は V2 では使えません。ダッシュボードで発行した APIキーを JQUANTS_API_KEY に設定してください")
         if key == "fred" and run and run.message and "FRED_API_KEY" in run.message:

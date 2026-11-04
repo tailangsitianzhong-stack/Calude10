@@ -26,7 +26,7 @@ def _is_set(settings: Settings, env: str) -> bool:
     if env == "TIINGO_API_KEY or MASSIVE_API_KEY":
         return settings.has_credential("tiingo") or settings.has_credential("massive")
     if env == "SEC_USER_AGENT":
-        return True  # 未設定でも仮の値で動く（画面に「仮設定」と表示）
+        return settings.sec_ua_configured  # 仮の値では接続しない
     if env == "JQUANTS_API_KEY":
         return settings.has_credential("jquants")
     return bool(getattr(settings, env.lower(), ""))
@@ -39,10 +39,10 @@ def provider_statuses(settings: Settings) -> list[ProviderStatus]:
         configured = not missing
         if p.key not in IMPLEMENTED:
             status, msg = "not_connected", "取得処理は未実装"
+        elif not configured and p.key == "sec_edgar":
+            status, msg = "not_connected", "SEC_USER_AGENT 未設定（アプリ名と連絡先メールアドレスが必要）"
         elif not configured:
             status, msg = "not_connected", "APIキー未設定（.env で設定）"
-        elif p.key == "sec_edgar" and settings.sec_ua_is_provisional:
-            status, msg = "ok", "接続中（連絡先は仮設定）"
         elif p.key == "fred":
             status, msg = "ok", "公式API（FRED_API_KEY）" if settings.fred_api_key else "公開CSV（キー不要）"
         else:

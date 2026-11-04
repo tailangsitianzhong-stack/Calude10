@@ -95,8 +95,11 @@ def test_market_overview_uses_stored_index_and_marks_topix_unconnected(client):
     assert ov["topix"]["value"] is None and ov["topix"]["data_status"] == "not_connected"
 
 
-def test_status_reports_provisional_sec_contact_and_unconnected_price_apis(client):
+def test_status_reports_missing_sec_contact_and_unconnected_price_apis(client):
     st = client.get("/api/v1/system/status").json()
     ds = {d["dataset"]: d for d in st["data_sources"]}
     assert ds["prices_jp"]["status"] == "not_connected" and ds["prices_us"]["status"] == "not_connected"
-    assert any("仮設定" in w for w in ds["sec_financials"]["warnings"])
+    assert any("SEC_USER_AGENT" in w for w in ds["sec_financials"]["warnings"])
+    sec_p = {p["key"]: p for p in st["providers"]}["sec_edgar"] if "providers" in st else None
+    if sec_p:
+        assert sec_p["configured"] is False and sec_p["status"] == "not_connected"

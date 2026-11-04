@@ -23,6 +23,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-asi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-asi}
+      # 起動した環境の環境変数（クラウド環境の設定など）を優先し、なければ .env の値を使う
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
     depends_on:
       db:
         condition: service_healthy
@@ -43,6 +45,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-asi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-asi}
+      # 起動した環境の環境変数（クラウド環境の設定など）を優先し、なければ .env の値を使う
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
     depends_on:
       db:
         condition: service_healthy

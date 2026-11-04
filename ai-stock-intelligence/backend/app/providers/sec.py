@@ -48,6 +48,8 @@ FORMS = ("10-K", "10-Q", "10-K/A", "10-Q/A", "20-F", "40-F")
 
 class SecClient:
     def __init__(self, user_agent: str):
+        if not user_agent.strip():
+            raise ValueError("SEC_USER_AGENT が未設定のため SEC には接続しない")
         self.http = RateLimitedClient(min_interval=0.125, headers={"User-Agent": user_agent, "Accept-Encoding": "gzip"})
 
     def tickers(self) -> dict:

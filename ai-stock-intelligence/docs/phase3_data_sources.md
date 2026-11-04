@@ -116,11 +116,11 @@ MASSIVE_BASE_URL=https://api.polygon.io
 ```
 
 ### 4.5 SEC EDGAR（財務データ）
-SECの規則により、アプリ名と連絡先メールアドレスを User-Agent に含めます。専用アドレスが決まったら：
+SECの規則により、アプリ名と連絡先メールアドレスを User-Agent に含めます。
 ```
 SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 ```
-未設定の間は仮の値（`provisional-contact@example.com`）で動き、画面に「仮設定」の警告を表示します。仮の値のまま長く使うと、SEC からアクセスを制限される可能性があります。
+仮の値は使いません。未設定・メールアドレスなし・例示用ドメイン（example.com など）のときは SEC に接続せず、取得済みの財務データだけを表示して「SEC_USER_AGENT が未設定のため更新していません」と警告します。
 
 ---
 
@@ -163,7 +163,7 @@ SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 | `TIINGO_API_KEY` | worker | Tiingo を使う場合 | Tiingo のトークン | Tiingo |
 | `MASSIVE_API_KEY` | worker | Massive を使う場合 | Massive（旧Polygon.io）のキー | 旧名 `POLYGON_API_KEY` でも可 |
 | `MASSIVE_BASE_URL` | worker | — | 空（`https://api.polygon.io`） | 旧名 `POLYGON_BASE_URL` でも可 |
-| `SEC_USER_AGENT` | worker | 推奨 | `AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン` | SECの規則（アプリ名と連絡先）。空なら仮設定 |
+| `SEC_USER_AGENT` | worker | 必須（SEC） | `AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン` | SECの規則（アプリ名と連絡先）。空なら SEC から取得しない |
 | `SEC_UNIVERSE_SIZE` | worker | — | `150` | 財務データを取得する米国株の数 |
 | `SEC_EXTRA_TICKERS` | worker | — | `KO,PEP,MU,JPM,KDP` | 必ず含める銘柄 |
 | `FRED_API_KEY` | worker | — | 空（公開CSV）。https://fred.stlouisfed.org/docs/api/api_key.html で取得したキー | 設定すると公式APIを使う。無効なら公開CSVに自動で切り替え |
