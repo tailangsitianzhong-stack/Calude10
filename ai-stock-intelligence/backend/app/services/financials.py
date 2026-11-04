@@ -102,7 +102,14 @@ def annual(facts: list[FinancialFact], years: int = 6) -> list[dict]:
 
 
 def ttm(facts: list[FinancialFact]) -> dict | None:
-    """直近4四半期 ＝ 直近の年度 ＋ 当年の累計（10-Q）− 前年同期の累計。最新の10-Qの書類の中で当年と前年を対にする。"""
+    """直近4四半期 ＝ 直近の年度 ＋ 当年の累計（10-Q）− 前年同期の累計。最新の10-Qの書類の中で当年と前年を対にする。
+
+    - 「当年の累計」は、直近の年度末より後に始まり、期間が1年未満の値に限る。10-Q には「過去12か月の合計」
+      （例 AMZN の営業CF）が載ることがあり、期末が同じため取り違えると、年度の値に12か月分を足してしまう。
+    - 最新の10-Qが直近の10-Kより前の期なら計算しない（年度の値が最新）。古い10-Qの累計を新しい年度に足すと
+      二重に数える（例 AAPL・MU：決算期末の後に10-Kだけが出ている時期）。
+    - 項目は決まった順で処理し、説明文は売上高（なければ最初に計算できた項目）の期間で作る（実行ごとに変わらない）。
+    """
     tenq = [f for f in facts if f.form.startswith("10-Q")]
     if not tenq:
         return None
@@ -111,13 +118,17 @@ def ttm(facts: list[FinancialFact]) -> dict | None:
     fy = annual(facts, years=1)
     if not fy:
         return None
+    fy_end = date.fromisoformat(fy[-1]["period_end"])
     fy_vals = fy[-1]["values"]
-    out, basis = {}, None
-    for concept in FLOW:
+    out, periods = {}, {}
+    for concept in sorted(FLOW):
         ytd = [f for f in tenq if f.accn == accn and f.concept == concept and (_days(f) or 0) > 100]
         if len(ytd) < 2 or concept not in fy_vals:
             continue
-        cur = max(ytd, key=lambda f: f.period_end)
+        cur_c = [f for f in ytd if f.period_start > fy_end and _days(f) < 350]
+        if not cur_c:  # 最新の10-Qが直近の年度より前の期、または当年の累計がない
+            continue
+        cur = max(cur_c, key=lambda f: f.period_end)
         prev = [f for f in ytd if f.period_end < cur.period_end and abs(_days(f) - _days(cur)) < 10]
         if not prev:
             continue
@@ -126,11 +137,13 @@ def ttm(facts: list[FinancialFact]) -> dict | None:
             same = [f for f in prev if f.tag == cur.tag]
             p = max(same, key=lambda f: f.period_end) if same else p
         out[concept] = fy_vals[concept] + cur.value - p.value
-        basis = f"{fy[-1]['period_end']}年度 ＋ {cur.period_start}〜{cur.period_end} − 前年同期"
+        periods[concept] = (cur.period_start, cur.period_end)
     if not out:
         return None
+    start, end = periods.get("revenue") or periods[next(iter(periods))]
     _apply_fallbacks(out, None)
-    return {"values": out, "basis": basis, "filed": latest.filed.isoformat(), "period_end": latest.period_end.isoformat()}
+    return {"values": out, "basis": f"{fy[-1]['period_end']}年度 ＋ {start}〜{end} − 前年同期",
+            "filed": latest.filed.isoformat(), "period_end": latest.period_end.isoformat()}
 
 
 def latest_balance(facts: list[FinancialFact]) -> dict | None:
