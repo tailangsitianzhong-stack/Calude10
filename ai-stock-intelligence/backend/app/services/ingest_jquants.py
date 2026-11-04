@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..providers.http import redact
 from ..config import get_settings
 from ..models import DailyPrice, IngestionRun
 from ..providers import jquants
@@ -32,7 +33,7 @@ def run(session: Session) -> IngestionRun:
             session.commit()
         except Exception as e:
             session.rollback()
-            errors.append(f"TOPIX: {str(e)[:150]}")
+            errors.append(f"TOPIX: {redact(str(e))[:150]}")
         delay = jquants.DELAY_DAYS.get(st.jquants_plan, 0)
         newest = date.today() - timedelta(days=delay)
         have = {d for (d,) in session.execute(select(DailyPrice.trade_date).where(DailyPrice.provider == "jquants").distinct())}
@@ -45,11 +46,11 @@ def run(session: Session) -> IngestionRun:
                     total += store_prices(session, "JP", rows, "jquants", delay * 24 * 60 if delay else None)
                     session.commit()
                 except PermissionError as e:
-                    errors.append(str(e))
+                    errors.append(redact(str(e)))
                     break
                 except Exception as e:
                     session.rollback()
-                    errors.append(f"{d}: {str(e)[:100]}")
+                    errors.append(f"{d}: {redact(str(e))[:100]}")
                 fetched += 1
             d -= timedelta(days=1)
     finally:

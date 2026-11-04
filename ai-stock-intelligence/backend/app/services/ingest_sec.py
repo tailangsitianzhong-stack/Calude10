@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from ..providers.http import redact
 from ..config import get_settings
 from ..models import DataQualityCheck, FinancialFact, IngestionRun, Security
 from ..providers import sec
@@ -111,9 +112,9 @@ def run(session: Session, limit: int | None = None) -> IngestionRun:
                 done += 1
             except Exception as e:
                 session.rollback()
-                errors.append(f"{s.code}: {str(e)[:100]}")
+                errors.append(f"{s.code}: {redact(str(e))[:100]}")
     except Exception as e:
-        errors.append(str(e)[:300])
+        errors.append(redact(str(e))[:300])
     finally:
         client.close()
     run = session.get(IngestionRun, run.id)

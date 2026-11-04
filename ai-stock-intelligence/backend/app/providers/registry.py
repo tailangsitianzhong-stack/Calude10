@@ -41,6 +41,8 @@ def provider_statuses(settings: Settings) -> list[ProviderStatus]:
             status, msg = "not_connected", "APIキー未設定（.env で設定）"
         elif p.key == "sec_edgar" and settings.sec_ua_is_provisional:
             status, msg = "ok", "接続中（連絡先は仮設定）"
+        elif p.key == "fred":
+            status, msg = "ok", "公式API（FRED_API_KEY）" if settings.fred_api_key else "公開CSV（キー不要）"
         else:
             status, msg = "ok", "接続設定済み"
         out.append(ProviderStatus(key=p.key, name=p.name, datasets=p.datasets, configured=configured, status=status,

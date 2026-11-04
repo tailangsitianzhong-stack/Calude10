@@ -11,7 +11,7 @@
 """
 from datetime import date
 
-from .http import RateLimitedClient
+from .http import RateLimitedClient, check
 
 BASE = "https://api.jquants.com"
 RATE_PER_MIN = {"free": 5, "light": 60, "standard": 120, "premium": 500}
@@ -59,7 +59,7 @@ class JQuantsClient:
             r = self.http.get(BASE + path, params=p)
             if r.status_code in (401, 403):
                 raise PermissionError(f"J-Quants の認証に失敗しました（{r.status_code}）。APIキーとプランを確認してください")
-            r.raise_for_status()
+            check(r)
             j = r.json()
             rows.extend(j.get("data", []))
             if not j.get("pagination_key"):

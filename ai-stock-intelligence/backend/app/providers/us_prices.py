@@ -9,7 +9,7 @@
 """
 from datetime import date, datetime, timezone
 
-from .http import RateLimitedClient
+from .http import RateLimitedClient, check
 
 
 def parse_tiingo(ticker: str, rows: list[dict]) -> list[dict]:
@@ -46,7 +46,7 @@ class TiingoClient:
             raise PermissionError(f"Tiingo の認証に失敗しました（{r.status_code}）")
         if r.status_code == 404:
             return []
-        r.raise_for_status()
+        check(r)
         return parse_tiingo(ticker, r.json())
 
     def close(self):
@@ -61,15 +61,15 @@ class MassiveClient:
         if not api_key:
             raise ValueError("Massive（旧Polygon.io）のAPIキーが未設定です（MASSIVE_API_KEY）")
         self.base = base_url.rstrip("/")
-        self.key = api_key
-        self.http = RateLimitedClient(min_interval=12.5)  # 無料プラン 5リクエスト/分
+        # キーはURLに含めず Authorization ヘッダーで送る（ログ・エラーに残さないため）
+        self.http = RateLimitedClient(min_interval=12.5, headers={"Authorization": f"Bearer {api_key}"})  # 無料 5回/分
 
     def grouped_daily(self, d: date) -> list[dict]:
         r = self.http.get(f"{self.base}/v2/aggs/grouped/locale/us/market/stocks/{d.isoformat()}",
-                          params={"adjusted": "true", "apiKey": self.key})
+                          params={"adjusted": "true"})
         if r.status_code in (401, 403):
             raise PermissionError(f"Massive の認証・プランの範囲外です（{r.status_code}）")
-        r.raise_for_status()
+        check(r)
         return parse_massive_grouped(r.json())
 
     def close(self):

@@ -62,6 +62,10 @@ def dataset_status(session: Session) -> list[dict]:
         warnings = []
         if key == "sec_financials" and st.sec_ua_is_provisional:
             warnings.append("SECへの連絡先（User-Agent）が仮設定です。専用のメールアドレスに変更してください")
+        if key == "prices_jp" and st.jquants_refresh_token and not st.jquants_api_key:
+            warnings.append("JQUANTS_REFRESH_TOKEN（V1）は V2 では使えません。ダッシュボードで発行した APIキーを JQUANTS_API_KEY に設定してください")
+        if key == "fred" and run and run.message and "FRED_API_KEY" in run.message:
+            warnings.append("FRED_API_KEY が受け付けられなかったため、公開CSVで取得しています")
         if key == "prices_jp" and st.jquants_api_key and st.jquants_plan == "free":
             warnings.append("Freeプランのため株価は約12週間遅れています。現在の株価ではありません")
         out.append({"dataset": key, **meta, "delay": delay, "status": status, "configured": configured,

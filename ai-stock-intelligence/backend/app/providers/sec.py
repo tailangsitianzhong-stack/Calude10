@@ -4,7 +4,7 @@ SECのアクセス規則（https://www.sec.gov/os/accessing-edgar-data）：
 - User-Agent にアプリ名と連絡先（メールアドレス）を含める → 設定 SEC_USER_AGENT
 - 毎秒10リクエスト以下 → 本実装は毎秒約8件に制限
 """
-from .http import RateLimitedClient
+from .http import RateLimitedClient, check
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
@@ -52,21 +52,21 @@ class SecClient:
 
     def tickers(self) -> dict:
         r = self.http.get(TICKERS_URL)
-        r.raise_for_status()
+        check(r)
         return r.json()
 
     def companyfacts(self, cik: int) -> dict | None:
         r = self.http.get(FACTS_URL.format(cik=cik))
         if r.status_code == 404:
             return None  # XBRLの財務データがない企業（新規上場・外国企業など）
-        r.raise_for_status()
+        check(r)
         return r.json()
 
     def frame(self, taxonomy: str, tag: str, unit: str, period: str) -> dict | None:
         r = self.http.get(FRAME_URL.format(taxonomy=taxonomy, tag=tag, unit=unit, period=period))
         if r.status_code == 404:
             return None
-        r.raise_for_status()
+        check(r)
         return r.json()
 
     def close(self):

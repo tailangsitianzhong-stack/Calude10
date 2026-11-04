@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from ..providers.http import redact
+from ..config import get_settings
 from ..models import DataQualityCheck, IndexBar, IngestionRun, MacroObservation, MacroSeries
 from ..providers import fred
 from .quality import outliers, staleness
@@ -70,13 +72,14 @@ def ingest_series(session: Session, client: fred.FredClient, sd: fred.SeriesDef)
 
 def run(session: Session, keys: list[str] | None = None) -> IngestionRun:
     ensure_series(session)
-    run = IngestionRun(dataset="fred", source="FRED fredgraph.csv", status="running")
+    key = get_settings().fred_api_key
+    run = IngestionRun(dataset="fred", source="FRED 公式API" if key else "FRED fredgraph.csv（公開CSV）", status="running")
     session.add(run)
     session.commit()
     if not keys:  # 全系列を取り直すときは、前回の検証結果を置き換える
         session.execute(delete(DataQualityCheck).where(DataQualityCheck.dataset == "fred"))
         session.commit()
-    client = fred.FredClient()
+    client = fred.FredClient(key)
     total, errors = 0, []
     try:
         for sd in fred.SERIES:
@@ -87,12 +90,15 @@ def run(session: Session, keys: list[str] | None = None) -> IngestionRun:
                 session.commit()
             except Exception as e:  # 1系列の失敗で全体を止めない
                 session.rollback()
-                errors.append(f"{sd.key}: {str(e)[:120]}")
+                errors.append(f"{sd.key}: {redact(str(e))[:120]}")
     finally:
         client.close()
     run = session.get(IngestionRun, run.id)
     run.rows, run.finished_at = total, datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if total or len(errors) < len(fred.SERIES) else "failed")
+    if client.key_rejected:
+        errors.insert(0, client.key_rejected)
+        run.source = "FRED fredgraph.csv（APIキーが無効のため切り替え）"
     run.message = "; ".join(errors)[:1000] or None
     run.source_as_of = session.scalar(select(func.max(MacroObservation.obs_date)))
     session.commit()

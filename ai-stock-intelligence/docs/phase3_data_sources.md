@@ -144,3 +144,34 @@ SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 - Massive 料金 https://massive.com/pricing
 - 第三者の比較（Massive の無料プランの詳細）：https://algodataindex.com/vendors/massive/ 、https://qveris.ai/guides/polygon-pricing-optimized 、https://apicostcalc.com/polygon.html
 - SEC「Accessing EDGAR Data」https://www.sec.gov/os/accessing-edgar-data
+
+---
+
+## 付録：環境変数の一覧（2026-11-04 時点のコードと一致を確認済み）
+
+`backend/app/config.py` が読み込む名前と、Docker Compose・画面が使う名前です。`backend/tests/test_config.py` で、各名前が実際に読み込まれることをテストしています。
+
+| 変数名 | 使う場所 | 必須 | 記入例・既定値 | 用途 |
+|---|---|---|---|---|
+| `POSTGRES_USER` | Docker Compose | — | `asi` | データベースの利用者名 |
+| `POSTGRES_PASSWORD` | Docker Compose | **必須** | ランダムな文字列 | データベースのパスワード |
+| `POSTGRES_DB` | Docker Compose | — | `asi` | データベース名 |
+| `DATABASE_URL` | api・worker | — | 空（Docker では自動設定、空なら SQLite） | Docker を使わない場合の接続先 |
+| `JQUANTS_API_KEY` | worker・api | 日本株に必要 | ダッシュボードで発行したAPIキー | J-Quants API V2（`x-api-key`） |
+| `JQUANTS_PLAN` | worker・api | — | `free`（light / standard / premium） | 遅延の表示とアクセス間隔 |
+| `US_PRICE_PROVIDER` | worker・api | 米国株に必要 | `tiingo`（または `massive` / `polygon`） | 米国株の株価の取得元 |
+| `TIINGO_API_KEY` | worker | Tiingo を使う場合 | Tiingo のトークン | Tiingo |
+| `MASSIVE_API_KEY` | worker | Massive を使う場合 | Massive（旧Polygon.io）のキー | 旧名 `POLYGON_API_KEY` でも可 |
+| `MASSIVE_BASE_URL` | worker | — | 空（`https://api.polygon.io`） | 旧名 `POLYGON_BASE_URL` でも可 |
+| `SEC_USER_AGENT` | worker | 推奨 | `AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン` | SECの規則（アプリ名と連絡先）。空なら仮設定 |
+| `SEC_UNIVERSE_SIZE` | worker | — | `150` | 財務データを取得する米国株の数 |
+| `SEC_EXTRA_TICKERS` | worker | — | `KO,PEP,MU,JPM,KDP` | 必ず含める銘柄 |
+| `FRED_API_KEY` | worker | — | 空（公開CSV）。https://fred.stlouisfed.org/docs/api/api_key.html で取得したキー | 設定すると公式APIを使う。無効なら公開CSVに自動で切り替え |
+| `EDINET_API_KEY` | （未使用） | — | 空 | 日本企業の財務（将来のフェーズ） |
+| `ANTHROPIC_API_KEY` | （未使用） | — | 空 | AIの説明文（フェーズ5） |
+| `API_BASE_URL` | web | — | Docker では自動。手元では `http://127.0.0.1:8000` | 画面のサーバーがAPIに接続する先（`.env` ではなく起動時に指定） |
+| `EXTRA_CA_CERT_FILE` | Docker のビルド | — | 空 | 社内プロキシ等で追加のCA証明書が必要な場合だけ |
+
+**書式の注意**：`名前=値` の形で、引用符・前後の空白・行末のコメントは付けない。値を空にした行は「未設定」として扱う（既定値があるものは既定値）。
+
+**秘密情報の扱い**：APIキーはサーバー側だけで使い、ブラウザに送らない。FRED と Massive のキーはログ・エラーメッセージ・画面に出ないよう伏せる（Massive はヘッダーで送信、FRED は URL を記録しない）。

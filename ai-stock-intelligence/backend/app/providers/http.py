@@ -2,9 +2,32 @@
 
 失敗しても例外を上位に伝え、取得処理ごとに失敗を記録する（他のデータ取得は止めない）。
 """
+import re
 import time
 
 import httpx
+
+# URL に含まれる秘密情報（APIキー）を、ログ・エラーメッセージ・画面に出さないために伏せる
+_SECRET_PARAMS = re.compile(r"((?:api_?key|apikey|token|access_token)=)[^&\s\"']+", re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    return _SECRET_PARAMS.sub(r"\1***", text or "")
+
+
+class HttpError(RuntimeError):
+    """HTTPエラー。メッセージにはAPIキーを含めない。"""
+
+    def __init__(self, status_code: int, url: str):
+        self.status_code = status_code
+        super().__init__(f"HTTP {status_code}: {redact(url)}")
+
+
+def check(r: httpx.Response) -> httpx.Response:
+    """raise_for_status の代わり。httpx の例外はURL（APIキーを含む場合がある）をそのまま含むため使わない。"""
+    if r.status_code >= 400:
+        raise HttpError(r.status_code, str(r.request.url))
+    return r
 
 
 class RateLimitedClient:
@@ -23,9 +46,9 @@ class RateLimitedClient:
             self._last = time.monotonic()
             try:
                 r = self.client.get(url, **kw)
-            except httpx.TransportError:
+            except httpx.TransportError as e:
                 if attempt == self.retries:
-                    raise
+                    raise RuntimeError(f"通信エラー：{type(e).__name__} {redact(url)}") from None
                 time.sleep(delay)
                 delay *= 2
                 continue

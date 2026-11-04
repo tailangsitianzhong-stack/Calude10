@@ -45,6 +45,8 @@ def schedule() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stdout)
+    # httpx は要求URLをそのままログに出す（FRED の api_key などを含む）ため、警告以上だけにする
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     ap = argparse.ArgumentParser()
     ap.add_argument("task", choices=["fred", "sec", "jquants", "us_prices", "all", "schedule"])
     ap.add_argument("--limit", type=int, default=None)

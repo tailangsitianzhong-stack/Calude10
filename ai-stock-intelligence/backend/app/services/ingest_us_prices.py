@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..providers.http import redact
 from ..config import get_settings
 from ..models import DailyPrice, FinancialFact, IngestionRun, Security
 from ..providers import us_prices
@@ -39,11 +40,11 @@ def run(session: Session) -> IngestionRun:
                     total += store_prices(session, "US", client.daily(s.code, start), "tiingo", None)
                     session.commit()
                 except PermissionError as e:
-                    errors.append(str(e))
+                    errors.append(redact(str(e)))
                     break
                 except Exception as e:
                     session.rollback()
-                    errors.append(f"{s.code}: {str(e)[:100]}")
+                    errors.append(f"{s.code}: {redact(str(e))[:100]}")
         finally:
             client.close()
     else:
@@ -57,11 +58,11 @@ def run(session: Session) -> IngestionRun:
                         total += store_prices(session, "US", client.grouped_daily(d), "massive", None)
                         session.commit()
                     except PermissionError as e:
-                        errors.append(str(e))
+                        errors.append(redact(str(e)))
                         break
                     except Exception as e:
                         session.rollback()
-                        errors.append(f"{d}: {str(e)[:100]}")
+                        errors.append(f"{d}: {redact(str(e))[:100]}")
                     fetched += 1
                 d -= timedelta(days=1)
         finally:
