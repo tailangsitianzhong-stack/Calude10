@@ -120,7 +120,9 @@ class Settings(BaseSettings):
 
     @property
     def massive_base_url(self) -> str:
-        return self.massive_base_url_raw.strip() or self.polygon_base_url.strip() or "https://api.polygon.io"
+        # 公式ドキュメント（https://massive.com/docs/rest/quickstart）の接続先。旧 api.polygon.io も同じ応答を返すことを確認済み
+        # （2026-11-04、キーなしで両方とも 401 "API Key was not provided"）。ネットワークシークレットの許可ホストと一致させること
+        return self.massive_base_url_raw.strip() or self.polygon_base_url.strip() or "https://api.massive.com"
 
     @property
     def sec_ua(self) -> str:
