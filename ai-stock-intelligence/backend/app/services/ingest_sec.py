@@ -144,7 +144,14 @@ def ingest_company(session: Session, client: sec.SecClient, s: Security) -> int:
         return 0
     facts = sec.extract_facts(cf)
     # companyfacts に未反映の提出書類は、提出書類のXBRLを直接読んで補う（SEC側の反映遅れへの対策）
-    subs = client.submissions(s.cik)
+    # 提出書類一覧の取得に失敗しても、companyfacts の値は保存する（補完と古さの原因の区別だけを諦める）
+    try:
+        subs = client.submissions(s.cik)
+    except Exception as e:
+        subs = None
+        session.add(DataQualityCheck(dataset="sec", subject=s.code, check_type="missing", severity="warn",
+                                     detail={"reason": "SECの提出書類一覧を取得できず、未反映の書類の補完を行わなかった",
+                                             "error": redact(str(e))[:120]}))
     filled, unreadable = [], []
     for f in missing_filings(cf, subs):
         try:

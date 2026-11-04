@@ -143,3 +143,24 @@ def test_missing_filings_and_instance_parser():
     assert got[("assets", "USD")]["value"] == 109215000000 and got[("assets", "USD")]["period_start"] is None
     assert got[("eps_diluted", "USD/shares")]["value"] == 1.5 and got[("eps_diluted", "USD/shares")]["fiscal_period"] == "Q2"
     assert len([f for f in facts if f["concept"] == "assets"]) == 1  # 区分つきの値は除く
+
+
+def test_submissions_failure_still_saves_companyfacts(client):
+    """提出書類一覧（submissions）の取得に失敗しても、companyfacts の値は保存する（PR #1 のレビューで見つけた問題）。"""
+    from app.models import DataQualityCheck
+    from app.services.ingest_sec import ingest_company
+
+    class FakeClient:
+        def companyfacts(self, cik):
+            return {"facts": {"us-gaap": {"Assets": {"units": {"USD": [
+                {"end": "2026-06-30", "val": 7, "accn": "a1", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-07-30"}]}}}}}
+
+        def submissions(self, cik):
+            raise RuntimeError("HTTP 503")
+
+    with SessionLocal() as s:
+        x = _sec(s, "SUBF", 9)
+        assert ingest_company(s, FakeClient(), x) == 1
+        s.commit()
+        assert s.query(FinancialFact).filter_by(security_id=x.id).count() == 1
+        assert s.query(DataQualityCheck).filter_by(subject="SUBF", check_type="missing").count() == 1
