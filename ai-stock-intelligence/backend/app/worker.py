@@ -5,6 +5,8 @@
     python -m app.worker sec [--limit N] # SECの財務データ
     python -m app.worker jquants         # J-Quants（APIキー設定時のみ）
     python -m app.worker edinet --codes 7203,6861 --start 2025-10-01 --end 2026-06-30
+    python -m app.worker edinet --all-listed --start 2026-06-01 --end 2026-06-15 --max-docs 200
+                                         # 日本の普通株すべて。書類一覧を処理し終えた日は記録し、次回は取り直さない
                                          # EDINET の決算書類から負債の合計などを取得（EDINET_API_KEY 設定時のみ）
     python -m app.worker jquants_fins [--codes 7203,6758] [--dates 2026-08-07] [--max-dates N]
                                          # J-Quants の日本企業の財務情報（指定なしは未取得の開示日を N 日分）
@@ -66,6 +68,10 @@ def main() -> None:
     ap.add_argument("task", choices=["fred", "sec", "jquants", "us_prices", "jquants_fins", "edinet", "all", "schedule"])
     ap.add_argument("--start", default=None, help="edinet：提出日の開始 YYYY-MM-DD")
     ap.add_argument("--recheck", action="store_true", help="edinet：API に接続せず、保存済みの値から照合の品質の記録を作り直す")
+    ap.add_argument("--all-listed", action="store_true",
+                    help="edinet：日本の普通株すべて（上場中）を対象にする。--start・--end で期間を区切り、--max-docs で1回の上限を決める")
+    ap.add_argument("--max-docs", type=int, default=None,
+                    help="edinet：1回（1バッチ）あたりの書類の取得数の上限（--all-listed の既定は 200）")
     ap.add_argument("--end", default=None, help="edinet：提出日の終了 YYYY-MM-DD")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--codes", default=None, help="jquants_fins：銘柄コード（カンマ区切り）")
@@ -89,10 +95,10 @@ def main() -> None:
         if a.recheck:
             job("edinet", recheck_only=True)
         else:
-            if not (a.codes and a.start and a.end):
-                ap.error("edinet には --codes・--start・--end が必要です（全銘柄の一括取得は行わない）")
-            job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()],
-                start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end))
+            if not (a.start and a.end) or not (a.codes or a.all_listed) or (a.codes and a.all_listed):
+                ap.error("edinet には --start・--end と、--codes か --all-listed のどちらか一方が必要です")
+            job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()] if a.codes else None,
+                start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end), all_listed=a.all_listed, max_docs=a.max_docs)
     elif a.task == "jquants_fins" and a.dedupe_quality:
         from .services.quality import remove_duplicates
         with SessionLocal() as s:
