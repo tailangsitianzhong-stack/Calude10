@@ -73,6 +73,10 @@ def main() -> None:
     ap.add_argument("--max-docs", type=int, default=None,
                     help="edinet：1回（1バッチ）あたりの書類の取得数の上限（--all-listed の既定は 200）")
     ap.add_argument("--end", default=None, help="edinet：提出日の終了 YYYY-MM-DD")
+    ap.add_argument("--report", action="store_true",
+                    help="edinet：API に接続せず、失敗の種類・負債なし・不一致率を集計して表示する（読み取りのみ）")
+    ap.add_argument("--mismatch-stop-rate", type=float, default=None,
+                    help="edinet：不一致率の停止基準（既定 0.10。照合できた書類が100件を超えてから判定）")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--codes", default=None, help="jquants_fins：銘柄コード（カンマ区切り）")
     ap.add_argument("--dates", default=None, help="jquants_fins：開示日 YYYY-MM-DD（カンマ区切り）")
@@ -81,7 +85,8 @@ def main() -> None:
                     help="jquants_fins：API に接続せず、内容が同じ品質の記録の重複だけを削除する（財務の値には触れない）")
     ap.add_argument("--quality-only", action="store_true", help="jquants_fins：API に接続せず、保存済みの開示から品質の記録だけを作る")
     a = ap.parse_args()
-    init_db()
+    if not (a.task == "edinet" and a.report):  # 集計は読み取りのみ（テーブルの作成・列の追加もしない）
+        init_db()
     log.info("start %s at %s", a.task, datetime.now(timezone.utc).isoformat())
     if a.task == "schedule":
         schedule()
@@ -92,7 +97,13 @@ def main() -> None:
         job("sec", limit=a.limit)
     elif a.task == "edinet":
         from datetime import date as _d
-        if a.recheck:
+        if a.report:
+            import json
+            from .services.ingest_edinet import report
+            with SessionLocal() as s:
+                print(json.dumps(report(s), ensure_ascii=False, indent=2))
+                s.rollback()
+        elif a.recheck:
             job("edinet", recheck_only=True)
         else:
             if not (a.start and a.end) or not (a.codes or a.all_listed) or (a.codes and a.all_listed):
@@ -100,7 +111,8 @@ def main() -> None:
             if a.max_docs is not None and a.max_docs < 1:
                 ap.error("--max-docs は1以上を指定してください")
             job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()] if a.codes else None,
-                start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end), all_listed=a.all_listed, max_docs=a.max_docs)
+                start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end), all_listed=a.all_listed, max_docs=a.max_docs,
+                **({"mismatch_stop_rate": a.mismatch_stop_rate} if a.mismatch_stop_rate is not None else {}))
     elif a.task == "jquants_fins" and a.dedupe_quality:
         from .services.quality import remove_duplicates
         with SessionLocal() as s:

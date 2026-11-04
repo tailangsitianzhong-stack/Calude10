@@ -444,3 +444,146 @@ def test_mismatch_record_keeps_edinet_source_on_recheck_and_old_records_stay_val
         assert q.detail["edinet_doc_id"] == "S2" and q.detail["edinet_submitted_at"] == "2026-06-22 09:30"
         assert [(f.concept, f.value, f.accn) for f in s.query(FinancialFact).order_by(FinancialFact.id)] == facts
         assert s.get(EdinetDocument, "S2").detail["cross_check"][0]["result"] == "不一致"
+
+
+# ---- 全銘柄展開の前の追加：失敗の種類の分類・不一致率の監視 ----
+
+def _bs(assets, liabilities=True, standard=None):
+    rows = [row("jppfs_cor:Assets", "CurrentYearInstant", assets), row("jppfs_cor:NetAssets", "CurrentYearInstant", 2_000_000_000)]
+    if liabilities:
+        rows.append(row("jppfs_cor:Liabilities", "CurrentYearInstant", 3_000_000_000))
+    return package(rows, {"AccountingStandardsDEI": standard} if standard else None)
+
+
+def test_failures_are_classified_by_type_and_report_is_read_only(client, monkeypatch):
+    """失敗の種類を、エラー文ではなく処理の段階で分類する：API通信（書類の取得）／書類の読み取り／認証（401）。
+    負債の要素がない書類・米国基準の書類は、読み取りは成功で、取得の失敗に数えない（種類ごとに数える）。"""
+    from app.models import FetchLog, IngestionRun
+    _setup_batch(monkeypatch)
+    _jp_sec("1111")
+    Counting.listing = {date(2026, 6, 22): [_m("OK", "11110"), _m("NET", "11110"), _m("BAD", "11110"),
+                                            _m("NOL", "11110"), _m("USG", "11110")]}
+    Counting.pkgs = {"OK": _bs(5_000_000_000), "BAD": b"not a zip", "NOL": _bs(5_000_000_000, liabilities=False),
+                     "USG": package([row("jpcrp_cor:TotalAssetsUSGAAPSummaryOfBusinessResults", "CurrentYearInstant", 1, "その他")],
+                                    {"AccountingStandardsDEI": "US GAAP"})}
+    Counting.fail = {"NET"}  # 取得の通信・応答のエラー（HTTP 500）
+    r = ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 22), end=date(2026, 6, 22))
+    assert r.status == "partial"
+    for k, v in {"documents_parsed": 3, "documents_failed": 2, "documents_failed_api": 1, "documents_failed_parse": 1,
+                 "documents_failed_store": 0, "auth_error": False,
+                 "liabilities_unavailable_no_liabilities_element": 1, "liabilities_unavailable_us_gaap": 1}.items():
+        assert f"'{k}': {v!r}" in r.message, k
+    assert r.message.startswith("取得の失敗 2（API通信 1・書類の読み取り 1・保存 0）")
+    with SessionLocal() as s:
+        assert s.get(EdinetDocument, "NET").detail["error_type"] == "api"
+        assert s.get(EdinetDocument, "BAD").detail["error_type"] == "parse"
+        assert {d.parse_status for d in s.query(EdinetDocument).filter(EdinetDocument.doc_id.in_(["NOL", "USG"]))} == {"parsed"}
+        u = {q.detail["doc_id"]: q.detail["reason_type"] for q in
+             s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="liabilities_unavailable")}
+        assert u == {"NOL": "no_liabilities_element", "USG": "us_gaap"}
+
+    # 認証エラー（401）：書類の失敗にせず、実行を止めて記録する
+    class Denied(Counting):
+        def csv_package(self, doc_id):
+            raise E.EdinetAuthError("EDINET の認証に失敗しました（401）")
+
+    monkeypatch.setattr(E, "EdinetClient", Denied)
+    r = ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 22), end=date(2026, 6, 22))
+    assert "'auth_error': True" in r.message and "'documents_failed': 0" in r.message
+
+    with SessionLocal() as s:  # 以前の形式の記録（種類の項目なし）
+        s.add(EdinetDocument(doc_id="LEG", security_id=None, sec_code="11110", form_code="030000", submitted_at="2026-06-01 15:00",
+                             parse_status="failed", detail={"error": "x"}, fetched_at=datetime.now(timezone.utc)))
+        s.add(DataQualityCheck(dataset="edinet", subject="1111", check_type="liabilities_unavailable", severity="info",
+                               detail={"doc_id": "OLDU", "standard": "USGAAP", "reason": "x"}))
+        s.commit()
+        counts = {m.__tablename__: s.query(m).count() for m in (EdinetDocument, DataQualityCheck, IngestionRun, FetchLog, FinancialFact)}
+        rep = ING.report(s)
+        assert not (s.new or s.dirty or s.deleted)
+        s.rollback()
+        assert counts == {m.__tablename__: s.query(m).count() for m in (EdinetDocument, DataQualityCheck, IngestionRun, FetchLog, FinancialFact)}
+    assert rep["documents_failed_by_type"] == {"api": 1, "parse": 1, "store": 0, "unknown": 1}
+    assert rep["documents_parsed"] == 3 and rep["documents_failed"] == 3 and rep["failure_rate"] == 0.5
+    assert rep["liabilities_unavailable_by_type"] == {"no_liabilities_element": 1, "us_gaap": 2}
+    assert rep["auth_error_runs"] == 1
+
+
+def test_mismatch_threshold_boundaries():
+    ex = ING.mismatch_exceeded
+    assert not ex(100, 50, 0.10)   # 照合できた書類が100件以下では判定しない
+    assert ex(101, 11, 0.10)       # 10.9%
+    assert not ex(101, 10, 0.10)   # 9.9%
+    assert not ex(200, 20, 0.10)   # ちょうど10%は超えていない
+    assert ING.MISMATCH_STOP_RATE == 0.10 and ING.MISMATCH_MIN_DOCS == 100
+
+
+def _mismatch_setup(monkeypatch, min_docs):
+    from app.services.ingest_jquants_fins import store_records
+    from tests.test_jp_financials import rec
+    _setup_batch(monkeypatch)
+    monkeypatch.setattr(ING, "MISMATCH_MIN_DOCS", min_docs)
+    sid = _jp_sec("1111")
+    with SessionLocal() as s:  # 比べる相手の決算短信（総資産50億円・純資産20億円）
+        store_records(s, [rec("D1", "11110", "2026-05-10", "FYFinancialStatements_Consolidated_JP", "FY", "2025-04-01",
+                              "2026-03-31", "2025-04-01", "2026-03-31", Sales=1, TA=5_000_000_000, Eq=2_000_000_000)],
+                      {"1111": sid}, datetime.now(timezone.utc))
+        s.commit()
+
+
+def _docs(day, spec):
+    """spec の文字列：m＝一致する書類、x＝総資産が10億円違う（不一致）書類。"""
+    metas = [_m(f"{day.day}{c}{i:03d}", "11110") for i, c in enumerate(spec)]
+    Counting.listing[day] = metas
+    for meta, c in zip(metas, spec):
+        Counting.pkgs[meta["docID"]] = _bs(5_000_000_000 if c == "m" else 6_000_000_000)
+    return [x["docID"] for x in metas]
+
+
+def test_mismatch_rate_stops_run_counts_batch_and_cumulative_and_blocks_next_start(client, monkeypatch):
+    """実際の基準（照合できた書類が100件を超えてから、10%超で停止）での動作。"""
+    from app.models import FetchLog
+    _mismatch_setup(monkeypatch, 100)
+    Counting.listing, Counting.pkgs = {}, {}
+    ids = _docs(date(2026, 6, 22), "m" * 89 + "x" * 30)
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22), max_docs=500)
+    assert r.status == "failed" and r.message.startswith("不一致率の停止基準により自動停止：バッチの不一致率 12/101 件（11.9%）")
+    assert "不一致率 バッチ 12/101（11.9%） 累計 12/101（11.9%）" in r.message
+    with SessionLocal() as s:
+        assert s.query(EdinetDocument).count() == 101          # 101件目で停止。残りは取得しない
+        assert s.get(EdinetDocument, ids[101]) is None
+        assert s.query(FetchLog).filter_by(dataset="edinet_list").count() == 0  # この日は「処理済み」にしない
+        assert s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="inconsistent").count() == 12  # 不一致は総資産のみ
+    lists = Counting.lists
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22), max_docs=500)
+    assert r.status == "failed" and "開始しない" in r.message and "12/101" in r.message
+    assert Counting.lists == lists  # API に接続しない
+    # 原因を確認したうえで基準を変えて再開すると、残りから続き、日付を記録する
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22), max_docs=500,
+                mismatch_stop_rate=0.5)
+    assert r.status == "success" and "累計 30/119（25.2%）" in r.message and "バッチ 18/18（100.0%）" in r.message
+    with SessionLocal() as s:
+        assert s.query(EdinetDocument).count() == 119 and s.query(FetchLog).filter_by(dataset="edinet_list").count() == 1
+
+
+def test_mismatch_stop_by_batch_rate_only(client, monkeypatch):
+    _mismatch_setup(monkeypatch, 4)
+    Counting.listing, Counting.pkgs = {}, {}
+    _docs(date(2026, 6, 22), "m" * 40)
+    assert ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22)).status == "success"
+    _docs(date(2026, 6, 23), "mmmmx" + "m" * 5)
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 23), end=date(2026, 6, 23))
+    assert "バッチの不一致率 1/5 件（20.0%）" in r.message and "累計 1/45（2.2%）" in r.message
+    with SessionLocal() as s:
+        assert s.query(EdinetDocument).count() == 45
+
+
+def test_mismatch_stop_by_cumulative_rate_only(client, monkeypatch):
+    _mismatch_setup(monkeypatch, 4)
+    Counting.listing, Counting.pkgs = {}, {}
+    _docs(date(2026, 6, 22), "mxxx")  # 4件（基準の件数以下なので判定しない）
+    assert ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 22), end=date(2026, 6, 22)).status == "success"
+    _docs(date(2026, 6, 23), "mmmm")
+    r = ING.run(SessionLocal(), all_listed=True, start=date(2026, 6, 23), end=date(2026, 6, 23))
+    assert "累計の不一致率 3/5 件（60.0%）" in r.message and "バッチ 0/1" in r.message
+    with SessionLocal() as s:
+        assert s.query(EdinetDocument).count() == 5
