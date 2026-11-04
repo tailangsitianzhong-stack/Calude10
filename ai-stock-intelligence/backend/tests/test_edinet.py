@@ -137,6 +137,9 @@ def test_ingest_stores_reported_liabilities_idempotent_and_cross_checks(client, 
         assert s.query(FinancialFact).filter_by(security_id=sid, concept="liabilities").count() == 1
         q = s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="inconsistent").one()
         assert q.detail["concept"] == "net_assets"
+        # 両方の出典：決算短信の開示番号と、EDINET の書類管理番号・提出日
+        assert q.detail["jquants_disclosure"] == "D1"
+        assert q.detail["edinet_doc_id"] == "S1" and q.detail["edinet_submitted_at"] == "2026-06-20 15:00"
         snap = snapshot(s, s.get(Security, sid))
         assert snap["balance"]["values"]["liabilities"] == 3000  # 報告された負債の合計
         assert snap["annual"][-1]["values"]["liabilities"] == 3000 and snap["annual"][-1]["values"]["revenue"] == 1000
@@ -406,3 +409,38 @@ def test_other_companies_documents_are_ignored_and_rerun_adds_nothing(client, mo
     ING.run(SessionLocal(), codes=["1111"], start=date(2026, 6, 22), end=date(2026, 6, 22))  # 同じ日を銘柄指定でも
     with SessionLocal() as s:
         assert (s.query(EdinetDocument).count(), s.query(FinancialFact).count(), s.query(DataQualityCheck).count()) == counts
+
+
+def test_mismatch_record_keeps_edinet_source_on_recheck_and_old_records_stay_valid(client, monkeypatch):
+    """不一致の記録に EDINET の書類管理番号・提出日を残す。再照合（API なし）でも同じ項目で作り直す。
+    この2項目がない以前の形式の記録があっても、読み取り・再照合が失敗しない。財務の値は変えない。"""
+    sid = _setup(monkeypatch)
+    from app.services.ingest_jquants_fins import store_records
+    from tests.test_jp_financials import rec
+    with SessionLocal() as s:
+        store_records(s, [rec("D1", "99990", "2026-05-10", "FYFinancialStatements_Consolidated_JP", "FY", "2025-04-01",
+                              "2026-03-31", "2025-04-01", "2026-03-31", Sales=1000, TA=5_000_000_000, Eq=2_000_000_000)],
+                      {"9999": sid}, datetime.now(timezone.utc))
+        s.commit()
+    FakeClient.listing = {date(2026, 6, 22): [_meta("S2", submitted="2026-06-22 09:30")]}
+    FakeClient.pkgs = {"S2": package([row("jppfs_cor:Liabilities", "CurrentYearInstant", 3000),
+                                      row("jppfs_cor:NetAssets", "CurrentYearInstant", 2_500_000_000)])}
+    FakeClient.fail = set()
+    assert ING.run(SessionLocal(), ["9999"], date(2026, 6, 22), date(2026, 6, 22)).status == "success"
+    with SessionLocal() as s:
+        # 以前の形式の記録（EDINET の出典の項目なし）を模擬して加える
+        s.add(DataQualityCheck(dataset="edinet", subject="9999", check_type="inconsistent", severity="warn",
+                               detail={"concept": "assets", "period_end": "2025-03-31", "standard": "JGAAP",
+                                       "edinet": 1.0, "jquants": 9_000_000.0, "jquants_disclosure": "OLD"}))
+        s.commit()
+        old = s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="inconsistent").all()
+        assert len(old) == 2 and sum("edinet_doc_id" not in q.detail for q in old) == 1
+        facts = [(f.concept, f.value, f.accn) for f in s.query(FinancialFact).order_by(FinancialFact.id)]
+    r = ING.run(SessionLocal(), recheck_only=True)
+    assert r.status == "success" and "'mismatch': 1" in r.message
+    with SessionLocal() as s:
+        q = s.query(DataQualityCheck).filter_by(dataset="edinet", check_type="inconsistent").one()  # 作り直し（重複なし）
+        assert q.detail["concept"] == "net_assets" and q.detail["jquants_disclosure"] == "D1"
+        assert q.detail["edinet_doc_id"] == "S2" and q.detail["edinet_submitted_at"] == "2026-06-22 09:30"
+        assert [(f.concept, f.value, f.accn) for f in s.query(FinancialFact).order_by(FinancialFact.id)] == facts
+        assert s.get(EdinetDocument, "S2").detail["cross_check"][0]["result"] == "不一致"

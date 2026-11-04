@@ -46,9 +46,11 @@ ROUNDING_YEN = 1_000_000  # 決算短信は百万円未満を切り捨てた値�
 
 
 def cross_check(session: Session, sid: int, code: str, period_end: date, values: dict, standard: str | None,
-                record: bool = True) -> list[dict]:
+                record: bool = True, edinet_doc_id: str | None = None, edinet_submitted_at: str | None = None) -> list[dict]:
     """同じ期末・同じ会計基準の J-Quants（決算短信）の総資産・純資産と比べる（基準の違う決算短信とは比べない）。
-    差が百万円未満なら「表示単位の丸め」として一致扱い。それ以上の食い違いは品質の記録（inconsistent）にする。"""
+    差が百万円未満なら「表示単位の丸め」として一致扱い。それ以上の食い違いは品質の記録（inconsistent）にする。
+    記録には両方の出典を残す：決算短信の開示番号（jquants_disclosure）と、EDINET の書類管理番号・提出日
+    （edinet_doc_id・edinet_submitted_at。2026-11-04 追加。これより前の記録にはこの2項目がない）。"""
     out = []
     for concept in ("assets", "net_assets"):
         if concept not in values:
@@ -69,7 +71,8 @@ def cross_check(session: Session, sid: int, code: str, period_end: date, values:
         if result == "不一致" and record:
             session.add(DataQualityCheck(dataset=QUALITY, subject=code, check_type="inconsistent", severity="warn",
                                          detail={"concept": concept, "period_end": str(period_end), "standard": standard,
-                                                 "edinet": ev, "jquants": v, "jquants_disclosure": accn}))
+                                                 "edinet": ev, "jquants": v, "jquants_disclosure": accn,
+                                                 "edinet_doc_id": edinet_doc_id, "edinet_submitted_at": edinet_submitted_at}))
     return out
 
 
@@ -99,7 +102,8 @@ def recheck(session: Session) -> dict:
         code = doc.sec_code[:4]
         vals = {f.concept: {"value": f.value} for f in session.scalars(
             select(FinancialFact).where(FinancialFact.accn == doc.doc_id, FinancialFact.source == SOURCE))}
-        checks = cross_check(session, doc.security_id, code, doc.period_end, vals, doc.accounting_standard)
+        checks = cross_check(session, doc.security_id, code, doc.period_end, vals, doc.accounting_standard,
+                             edinet_doc_id=doc.doc_id, edinet_submitted_at=doc.submitted_at)
         stats["documents"] += 1
         stats["checks"] += len(checks)
         stats["mismatch"] += sum(c["result"] == "不一致" for c in checks)
@@ -134,7 +138,8 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
     try:
         parsed = edinet.parse_csv_package(client.csv_package(meta["docID"]))
         added, existing = store_document(session, meta, parsed, sec.id, now)
-        checks = cross_check(session, sec.id, sec.code, parsed["period_end"], parsed["values"], parsed["accounting_standard"])
+        checks = cross_check(session, sec.id, sec.code, parsed["period_end"], parsed["values"], parsed["accounting_standard"],
+                             edinet_doc_id=meta["docID"], edinet_submitted_at=meta["submitDateTime"])
         record_unavailable(session, sec.code, meta["docID"], parsed["accounting_standard"], parsed["values"])
         session.add(EdinetDocument(
             doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),
