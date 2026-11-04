@@ -2,20 +2,51 @@
 
 as_of を指定すると、その日までにSECに提出された書類の値だけを使う（バックテストでの先読みを防ぐ）。
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import FinancialFact, Security
-from ..providers.sec import CONCEPTS
+from ..providers.sec import CONCEPTS, currency_of
 
 FLOW = {"revenue", "gross_profit", "operating_income", "pretax_income", "income_tax", "net_income", "net_income_common",
         "eps_diluted", "shares_diluted", "cfo", "capex", "dna", "dividends_paid", "buybacks", "interest_expense"}
 STOCK = {"assets", "liabilities", "equity", "cash", "goodwill", "debt_noncurrent", "debt_current", "short_term_borrowings",
          "inventory", "shares_outstanding"}
 TAG_RANK = {c: {tag: i for i, (_, tag) in enumerate(tags)} for c, tags in CONCEPTS.items()}
+# 売上の候補のうち、他の売上タグがない期間だけ使うもの（税を含む売上は、税抜きの売上より大きくなるため）
+REVENUE_FALLBACK_TAGS = {"RevenueFromContractWithCustomerIncludingAssessedTax"}
+
+
+# 項目の報告がない期間だけ、企業が報告した別の項目の値を使う（例 BKNG は2016年以降、純利益を
+# 「普通株主に帰属する純利益」だけで報告）。値を推測・計算するのではなく、どの項目を使ったかを tags に残す
+FALLBACK_CONCEPTS = {"net_income": "net_income_common"}
+
+
+def _apply_fallbacks(values: dict, tags: dict | None) -> None:
+    for concept, alt in FALLBACK_CONCEPTS.items():
+        if concept not in values and alt in values:
+            values[concept] = values[alt]
+            if tags is not None and alt in tags:
+                tags[concept] = tags[alt]
+
+
+def reporting_currency(facts: list[FinancialFact]) -> str | None:
+    """財務データを報告している通貨（例 USD・CAD）。最新の年次報告の金額の単位で決め、なければ最新の書類で決める。"""
+    money = [f for f in facts if currency_of(f.unit)]
+    if not money:
+        return None
+    annual_forms = [f for f in money if f.form.startswith(("10-K", "20-F", "40-F"))]
+    pool = annual_forms or money
+    latest = max(f.filed for f in pool)
+    return Counter(currency_of(f.unit) for f in pool if f.filed == latest).most_common(1)[0][0]
+
+
+def in_currency(facts: list[FinancialFact], cur: str | None) -> list[FinancialFact]:
+    """報告通貨の金額・1株あたりの値と、株数だけを残す（通貨の違う値を混ぜて計算しない）。"""
+    return [f for f in facts if f.unit == "shares" or currency_of(f.unit) == cur]
 
 
 def security_ids_for(session: Session, s: Security) -> list[int]:
@@ -40,7 +71,8 @@ def _pick(cands: list[FinancialFact], concept: str) -> FinancialFact:
     """同じ期間の候補から1つ選ぶ。売上は、一部の売上項目だけのタグを拾う誤り（第6段階）を避けるため最大値。
     それ以外はタグの優先順位、同順位なら最新の提出。"""
     if concept == "revenue":
-        return max(cands, key=lambda f: (f.value, f.filed))
+        main = [f for f in cands if f.tag not in REVENUE_FALLBACK_TAGS] or cands
+        return max(main, key=lambda f: (f.value, f.filed))
     return min(cands, key=lambda f: (TAG_RANK[concept].get(f.tag, 99), -f.filed.toordinal()))
 
 
@@ -64,6 +96,7 @@ def annual(facts: list[FinancialFact], years: int = 6) -> list[dict]:
             row["values"][concept] = f.value
             row["tags"][concept] = f.tag
             row["filed"] = max(row["filed"] or f.filed.isoformat(), f.filed.isoformat())
+        _apply_fallbacks(row["values"], row["tags"])
         out.append(row)
     return out
 
@@ -96,6 +129,7 @@ def ttm(facts: list[FinancialFact]) -> dict | None:
         basis = f"{fy[-1]['period_end']}年度 ＋ {cur.period_start}〜{cur.period_end} − 前年同期"
     if not out:
         return None
+    _apply_fallbacks(out, None)
     return {"values": out, "basis": basis, "filed": latest.filed.isoformat(), "period_end": latest.period_end.isoformat()}
 
 
@@ -103,8 +137,11 @@ def latest_balance(facts: list[FinancialFact]) -> dict | None:
     inst = [f for f in facts if f.concept in STOCK and f.period_start is None]
     if not inst:
         return None
-    end = max(f.period_end for f in inst if f.concept in ("assets", "equity", "cash"))
-    vals, filed = {}, None
+    core = [f.period_end for f in inst if f.concept in ("assets", "equity", "cash")]
+    if not core:  # 株数だけで、貸借対照表の金額がない（例：報告通貨の値がない）
+        return None
+    end = max(core)
+    vals, tags, filed = {}, {}, None
     for concept in STOCK:
         c = [f for f in inst if f.concept == concept and f.period_end == end]
         if concept == "shares_outstanding":  # 表紙の株数は期末日と異なる日付のため、最新のものを使う
@@ -112,16 +149,20 @@ def latest_balance(facts: list[FinancialFact]) -> dict | None:
         if c:
             f = _pick(c, concept)
             vals[concept] = f.value
+            tags[concept] = f.tag
             filed = max(filed or f.filed.isoformat(), f.filed.isoformat())
-    return {"period_end": end.isoformat(), "values": vals, "filed": filed}
+    return {"period_end": end.isoformat(), "values": vals, "filed": filed, "tags": tags}
 
 
 def snapshot(session: Session, s: Security, as_of: date | None = None) -> dict:
     facts = load_facts(session, security_ids_for(session, s), as_of)
     if not facts:
         return {"data_status": "not_connected" if s.market == "JP" else "insufficient", "annual": [], "ttm": None,
-                "balance": None, "latest_filed": None}
+                "balance": None, "latest_filed": None, "currency": None, "other_currencies": []}
     latest_filed = max(f.filed for f in facts)
+    cur = reporting_currency(facts)
+    others = sorted({c for f in facts if (c := currency_of(f.unit)) and c != cur})
+    facts = in_currency(facts, cur)
     return {"data_status": "stale" if (as_of or date.today()) .toordinal() - latest_filed.toordinal() > 120 else "ok",
             "annual": annual(facts), "ttm": ttm(facts), "balance": latest_balance(facts),
-            "latest_filed": latest_filed.isoformat()}
+            "latest_filed": latest_filed.isoformat(), "currency": cur, "other_currencies": others}

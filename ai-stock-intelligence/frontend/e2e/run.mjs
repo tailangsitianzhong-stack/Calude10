@@ -87,6 +87,16 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-us-${label}.png`, fullPage: true });
   });
 
+  await test(`[${label}] カナダドルで報告する企業（ENB）：エラーにならず、報告通貨で表示`, async () => {
+    const res = await page.goto(BASE + "/stocks/US/ENB");
+    assert(res.status() === 200, `ENB の詳細ページが ${res.status()}`);
+    const t = await page.getByTestId("financials-table").innerText();
+    assert(/カナダドル/.test(t) && !/億ドル|兆ドル/.test(t.replace(/カナダドル/g, "")), `ENB の金額がカナダドルで表示されていない：${t.slice(0, 160)}`);
+    assert(/CAD/.test(await page.getByTestId("financials-currency").innerText()), "報告通貨の表示がない");
+    await noHorizontalOverflow(page);
+    if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-enb-${label}.png`, fullPage: true });
+  });
+
   await test(`[${label}] データの状態ページ`, async () => {
     await page.goto(BASE + "/data");
     const fred = await page.getByTestId("ds-fred").innerText();
