@@ -65,7 +65,9 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     const tenY = await page.getByTestId("macro-us_10y").innerText();
     assert(/\d/.test(tenY) && /\d{4}\/\d{2}\/\d{2}/.test(tenY), `米10年金利に値・基準日がない：${tenY}`);
     const bar = await page.getByRole("status", { name: "データの状態" }).innerText();
-    assert(/日本株の株価/.test(bar) && /未接続/.test(bar), "上部の状態バーに日本株の株価が未接続と表示されていない");
+    const jpBar = await page.getByTestId("bar-prices_jp").innerText();
+    assert(/日本株の株価/.test(jpBar) && (/未接続/.test(jpBar) || /\d{4}\/\d{2}\/\d{2}まで/.test(jpBar)),
+      `上部の状態バーに日本株の株価の状態（未接続 または 最新データの日付）がない：${jpBar}`);
     assert(/仮設定/.test(bar), "SECの連絡先が仮設定である警告がない");
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/dashboard-${label}.png`, fullPage: true });
@@ -105,7 +107,13 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     await page.getByTestId("security-name").waitFor();
     assert((await page.getByTestId("security-name").innerText()) === "トヨタ自動車", "詳細ページの銘柄名が違う");
     const quote = await page.getByTestId("quote").innerText();
-    assert(/未接続/.test(quote) && !/\d{2,}/.test(quote.replace(/JPY/g, "")), `株価に数値が表示されている：${quote}`);
+    if (/未接続/.test(quote)) {
+      assert(!/\d{2,}/.test(quote.replace(/JPY/g, "")), `未接続なのに株価に数値が表示されている：${quote}`);
+    } else {
+      // 接続済み：取得元・基準日・遅延（リアルタイムではない旨）が必ず表示されること
+      assert(/J-Quants/.test(quote) && /\d{4}\/\d{2}\/\d{2}/.test(quote) && /リアルタイムの株価ではありません/.test(quote),
+        `株価の取得元・基準日・遅延の表示がない：${quote}`);
+    }
     assert(/未評価/.test(await page.locator("main").innerText()), "総合評価が「未評価」になっていない");
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-${label}.png`, fullPage: true });

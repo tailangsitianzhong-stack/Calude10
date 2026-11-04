@@ -29,8 +29,8 @@ export async function StatusBar() {
             {d.latest_data_date && <span className="num text-faint">{fmtDay(d.latest_data_date)}まで</span>}
           </span>
         ))}
-        {warn.length > 0 && <span className="text-warn">⚠ {warn[0]}</span>}
         <Link href="/data" className="ml-auto text-accent hover:underline">データの詳細</Link>
+        {warn.map((w) => <span key={w} className="basis-full text-warn">⚠ {w}</span>)}
       </div>
     </div>
   );

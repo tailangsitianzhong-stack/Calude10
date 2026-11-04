@@ -57,7 +57,8 @@ class JQuantsClient:
         per_min = RATE_PER_MIN.get(plan, 5)
         # ネットワークシークレットの場合、x-api-key はプロキシが付けるので、ここでは付けない（二重送信を避ける）
         headers = {} if network_secret else {"x-api-key": api_key}
-        self.http = RateLimitedClient(min_interval=60.0 / per_min + 0.2, headers=headers)
+        # 上限に達した場合は1分待って再試行する（分単位の上限のため）
+        self.http = RateLimitedClient(min_interval=60.0 / per_min + 0.2, headers=headers, retries=3, rate_limit_wait=61.0)
 
     def _paged(self, path: str, params: dict) -> list[dict]:
         rows, p = [], dict(params)

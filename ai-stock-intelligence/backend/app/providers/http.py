@@ -31,9 +31,11 @@ def check(r: httpx.Response) -> httpx.Response:
 
 
 class RateLimitedClient:
-    def __init__(self, min_interval: float, headers: dict | None = None, timeout: float = 60.0, retries: int = 4):
+    def __init__(self, min_interval: float, headers: dict | None = None, timeout: float = 60.0, retries: int = 4,
+                 rate_limit_wait: float = 2.0):
         self.min_interval = min_interval
         self.retries = retries
+        self.rate_limit_wait = rate_limit_wait  # 429（回数上限）のときの最低待ち時間
         self._last = 0.0
         self.client = httpx.Client(timeout=timeout, headers=headers or {}, follow_redirects=True)
 
@@ -53,7 +55,10 @@ class RateLimitedClient:
                 delay *= 2
                 continue
             if r.status_code in (429, 500, 502, 503, 504) and attempt < self.retries:
-                time.sleep(float(r.headers.get("Retry-After", delay)))
+                wait = float(r.headers.get("Retry-After", delay))
+                if r.status_code == 429:
+                    wait = max(wait, self.rate_limit_wait)
+                time.sleep(wait)
                 delay *= 2
                 continue
             return r

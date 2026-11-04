@@ -57,6 +57,9 @@ def dataset_status(session: Session) -> list[dict]:
             status = "error"
         else:
             status = "ok"
+            # 取得自体は成功していても、最新データが古ければ「古いデータ」と表示する（例：Freeプランの12週間遅延）
+            if key in ("prices_jp", "prices_us") and latest_data and (date.today() - latest_data).days > 7:
+                status = "stale"
         issues = session.scalar(select(func.count()).select_from(DataQualityCheck).where(
             DataQualityCheck.dataset == key.split("_")[0] if key in ("fred", "sec_financials") else DataQualityCheck.dataset == key)) or 0
         warnings = []
