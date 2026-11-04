@@ -51,9 +51,9 @@ def dataset_status(session: Session) -> list[dict]:
                       "prices_us": bool(st.us_price_provider and st.has_credential(st.us_price_provider))}.get(key, True)
         if not configured:
             status = "not_connected"
-        elif ok_run is None:
+        elif ok_run is None and not rows:
             status = "not_connected"
-        elif run and run.status == "failed":
+        elif run and run.status == "failed" and not rows:
             status = "error"
         else:
             status = "ok"

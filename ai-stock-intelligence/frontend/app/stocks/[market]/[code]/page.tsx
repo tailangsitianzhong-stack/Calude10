@@ -76,7 +76,7 @@ export default async function StockPage({ params }: { params: Params }) {
 
       <Card id="chart" title="株価チャート" aside={<StatusBadge status={quote.data_status} />}>
         {px.ok && px.data.points.length > 1 ? (
-          <LineChart points={px.data.points.map((p) => [p[0], p[1]] as [string, number])} label={`${s.name}の株価`} height={260} />
+          <LineChart points={px.data.points.map((p) => [p[0], p[1]] as [string, number])} label={`${s.name}の株価`} height={300} width={1400} />
         ) : (
         <div className="grid h-56 place-items-center rounded-xl border border-dashed border-line bg-raised/30 text-center text-sm text-muted sm:h-72">
           <div>

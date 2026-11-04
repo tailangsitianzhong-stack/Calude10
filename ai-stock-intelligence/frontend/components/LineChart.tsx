@@ -1,9 +1,10 @@
 // 実データの系列だけを描く折れ線（SVG）。点が2つ未満なら何も描かない。
-export function LineChart({ points, height = 140, label, unit = "", showAxis = true }: {
-  points: [string, number][]; height?: number; label: string; unit?: string; showAxis?: boolean;
+export function LineChart({ points, height = 140, width = 600, label, unit = "", showAxis = true }: {
+  points: [string, number][]; height?: number; width?: number; label: string; unit?: string; showAxis?: boolean;
 }) {
   if (points.length < 2) return null;
-  const W = 600, H = height, pad = showAxis ? 26 : 4;
+  // 横長の座標系にすることで、画面幅が広くても高さが過大にならないようにする
+  const W = width, H = height, pad = showAxis ? 26 : 4;
   const vals = points.map((p) => p[1]);
   const min = Math.min(...vals), max = Math.max(...vals);
   const span = max - min || 1;
