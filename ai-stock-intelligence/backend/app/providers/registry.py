@@ -7,7 +7,7 @@ from ..config import Settings
 from .base import ProviderInfo, ProviderStatus
 
 PROVIDERS: tuple[ProviderInfo, ...] = (
-    ProviderInfo("jquants", "J-Quants API V2（日本取引所グループ）", ("prices_jp", "indices_jp"),
+    ProviderInfo("jquants", "J-Quants API V2（日本取引所グループ）", ("prices_jp", "indices_jp", "financials_jp"),
                  ("JQUANTS_API_KEY",), "https://jpx-jquants.com/", "Freeプランは約12週間遅延"),
     ProviderInfo("us_prices", "米国株の株価API（Tiingo / Massive）", ("prices_us",),
                  ("US_PRICE_PROVIDER", "TIINGO_API_KEY or MASSIVE_API_KEY"), "", "docs/phase3_data_sources.md 参照"),

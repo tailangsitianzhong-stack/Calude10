@@ -2,7 +2,7 @@
 
 日本株・米国株の分析・評価・予測検証Webアプリ（開発中）。設計は `docs/phase1_design.md`。
 
-## 現在の状態：フェーズ3（金融データ連携）完了 — 株価APIのキー待ち
+## 現在の状態：フェーズ3（金融データ連携）実施中 — 残り：EDINET（日本企業の負債の補完）、プロバイダー障害時の切り替えテスト（設計書 14章の完了条件）
 
 | 機能 | 状態 |
 |---|---|
@@ -11,10 +11,11 @@
 | 経済指標・金利・為替・株価指数の終値（FRED、26系列） | **実装済み（実データ）** |
 | 米国企業の財務データ（SEC EDGAR、時点つき） | **実装済み（実データ、大型株約150社＋指定銘柄）** |
 | データ品質の検証（欠損・古さ・異常値）と、取得日時・遅延・信頼性の表示 | 実装済み |
-| 日本株の株価・TOPIX（J-Quants API V2） | **実装済み・APIキー待ち**（未設定の間は「未接続」） |
+| 日本株の株価・TOPIX（J-Quants API V2） | **実装済み・実接続を確認**（Freeプランは約12週間遅延。TOPIX は Light 以上） |
 | 米国株の株価（Tiingo / Massive、切り替え可能） | **実装済み・APIキー待ち** |
 | 定期取得ワーカー（Docker の worker サービス） | 実装済み |
-| 日本企業の財務・ニュース・開示 | 未実装 |
+| 日本企業の財務（J-Quants API V2 `/v2/fins/summary`、時点つき） | **実装済み**（18社で実データ検証。全銘柄の一括取得は未実施）。負債の合計は EDINET で補完予定（APIキー待ち） |
+| ニュース・開示 | 未実装（フェーズ4の担当） |
 | 採点・ランキング（フェーズ4）、予測（フェーズ5）、検証（フェーズ6）、ログイン（フェーズ7） | 未実装 |
 
 データソースの比較・接続手順は `docs/phase3_data_sources.md`。
@@ -47,9 +48,9 @@ cd frontend && npm ci && npm run build && API_BASE_URL=http://127.0.0.1:8000 npm
 ## テスト
 
 ```bash
-cd backend && python -m pytest -q                 # 単体テスト（38件）
+cd backend && python -m pytest -q                 # 単体テスト（46件）
 cd frontend && npx tsc --noEmit && npx next build  # 型検査・ビルド
-cd frontend && npm run e2e                         # 画面のE2E（PC・スマートフォン、21件。API・Webの起動が必要）
+cd frontend && npm run e2e                         # 画面のE2E（PC・スマートフォン、23件。API・Webの起動が必要）
 API_DOWN=1 npm run e2e                             # APIを止めた状態のE2E（エラー表示・数値を作らないこと）
 ```
 

@@ -149,3 +149,45 @@ class DataQualityCheck(Base):
     severity: Mapped[str] = mapped_column(String(8))  # info / warn / error
     detail: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JpDisclosure(Base):
+    """J-Quants 財務情報（/v2/fins/summary）の開示1件。元のデータ（項目名・値）をそのまま残し、追跡できるようにする。
+
+    開示番号（DiscNo）が主キー。訂正開示には新しい開示番号が付くため、既存の行は更新しない（追記のみ）。
+    業績・配当予想の修正もここに残す（実績の financial_facts には入れない）。
+    """
+
+    __tablename__ = "jp_disclosures"
+
+    disc_no: Mapped[str] = mapped_column(String(32), primary_key=True)
+    security_id: Mapped[int | None] = mapped_column(ForeignKey("securities.id"), index=True)  # 銘柄一覧にない場合は None
+    jq_code: Mapped[str] = mapped_column(String(8), index=True)  # J-Quants の5桁コード
+    disc_date: Mapped[date] = mapped_column(Date, index=True)  # TDnetの開示日（JST）
+    disc_time: Mapped[str | None] = mapped_column(String(8))  # 開示時刻（JST）。訂正の順序の判定に使う
+    doc_type: Mapped[str] = mapped_column(String(64))  # 開示書類種別（公式の一覧の値）
+    kind: Mapped[str] = mapped_column(String(16))  # statement（決算短信）/ forecast（予想の修正）/ unknown
+    accounting_standard: Mapped[str | None] = mapped_column(String(16))  # JGAAP / IFRS / USGAAP / JMIS / Foreign / REIT
+    consolidated: Mapped[bool | None] = mapped_column(Boolean)
+    period_type: Mapped[str | None] = mapped_column(String(4))  # 1Q / 2Q / 3Q / 4Q / 5Q / FY
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    fy_start: Mapped[date | None] = mapped_column(Date)
+    fy_end: Mapped[date | None] = mapped_column(Date)
+    raw: Mapped[dict] = mapped_column(JSON)  # 応答のレコードそのまま（項目名・値・空文字列を含む）
+    source: Mapped[str] = mapped_column(String(32))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class FetchLog(Base):
+    """取得済みのキー（例：J-Quants 財務情報の開示日）。同じキーを取り直さないために使う。"""
+
+    __tablename__ = "fetch_log"
+    __table_args__ = (UniqueConstraint("dataset", "key", name="uq_fetch_log"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset: Mapped[str] = mapped_column(String(64), index=True)
+    key: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16))  # success / failed
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
