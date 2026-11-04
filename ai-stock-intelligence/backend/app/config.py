@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     # 米国株の株価：tiingo / massive（旧 Polygon.io。polygon と書いても同じ）
     us_price_provider: str = ""
+    # 主の取得元が使えないときの代替（tiingo / massive）。空なら、キーのあるもう一方を使う
+    us_price_fallback: str = ""
+    # Massive で1回の実行に取得する営業日の数（無料プランは5リクエスト/分のため、1日あたり約12.5秒）
+    massive_max_days: int = 60
     tiingo_api_key: str = ""
     # Massive（旧 Polygon.io）のキー：MASSIVE_API_KEY を優先し、空なら旧名 POLYGON_API_KEY を使う
     # （空の MASSIVE_API_KEY= が .env にあっても POLYGON_API_KEY が無視されないよう、別々に読んでから選ぶ）
@@ -84,7 +88,7 @@ class Settings(BaseSettings):
         # .env の「DATABASE_URL=」（空）は未指定として扱い、SQLite を使う
         return (v or "").strip() or "sqlite:///./data/asi.sqlite3"
 
-    @field_validator("jquants_plan", "us_price_provider", mode="before")
+    @field_validator("jquants_plan", "us_price_provider", "us_price_fallback", mode="before")
     @classmethod
     def _lower(cls, v):
         return (v or "").strip().lower()
@@ -101,7 +105,7 @@ class Settings(BaseSettings):
             raise ValueError(f"JQUANTS_PLAN は {', '.join(JQUANTS_PLANS)} のいずれか（指定値：{v}）")
         return v
 
-    @field_validator("us_price_provider")
+    @field_validator("us_price_provider", "us_price_fallback")
     @classmethod
     def _provider(cls, v):
         if v not in US_PRICE_PROVIDERS:
@@ -122,7 +126,9 @@ class Settings(BaseSettings):
 
     @property
     def massive_base_url(self) -> str:
-        return self.massive_base_url_raw.strip() or self.polygon_base_url.strip() or "https://api.polygon.io"
+        # 公式ドキュメント（https://massive.com/docs/rest/quickstart）の接続先。旧 api.polygon.io も同じ応答を返すことを確認済み
+        # （2026-11-04、キーなしで両方とも 401 "API Key was not provided"）。ネットワークシークレットの許可ホストと一致させること
+        return self.massive_base_url_raw.strip() or self.polygon_base_url.strip() or "https://api.massive.com"
 
     @property
     def sec_ua(self) -> str:
