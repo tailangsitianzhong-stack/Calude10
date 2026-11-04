@@ -8,6 +8,7 @@ const ITEMS = [
   { href: "/search", label: "銘柄検索", short: "検索" },
   { href: "/rankings", label: "AIランキング", short: "ランキング" },
   { href: "/validation", label: "予測検証", short: "検証" },
+  { href: "/data", label: "データ", short: "データ" },
 ];
 
 function useActive() {
@@ -35,7 +36,7 @@ export function Nav() {
 export function MobileNav() {
   const active = useActive();
   return (
-    <nav aria-label="メイン（モバイル）" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-line bg-surface/95 backdrop-blur md:hidden">
+    <nav aria-label="メイン（モバイル）" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-line bg-surface/95 backdrop-blur md:hidden">
         {ITEMS.map((i) => (
           <Link key={i.href} href={i.href} aria-current={active(i.href) ? "page" : undefined}
             className={`py-3 text-center text-[12px] font-medium ${active(i.href) ? "text-accent" : "text-muted"}`}>

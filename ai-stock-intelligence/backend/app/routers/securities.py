@@ -1,9 +1,15 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
-from ..models import Security
+from ..config import get_settings
+from ..models import DailyPrice, DataQualityCheck, Security
+from ..providers import jquants
+from ..services.financials import snapshot
+from ..services.quality import staleness
 from ..schemas import Quote, SearchResult, Section, SecurityDetail, SecurityOut
 from ..services.text import normalize
 
@@ -13,7 +19,7 @@ CURRENCY = {"JP": "JPY", "US": "USD"}
 
 
 def to_out(s: Security) -> SecurityOut:
-    return SecurityOut(market=s.market, code=s.code, name=s.name, exchange=s.exchange, sector=s.sector,
+    return SecurityOut(market=s.market, code=s.code, cik=s.cik, name=s.name, exchange=s.exchange, sector=s.sector,
                        size_class=s.size_class, security_type=s.security_type, is_active=s.is_active,
                        source=s.source, source_as_of=s.source_as_of)
 
@@ -52,12 +58,57 @@ def get_security(session: Session, market: str, code: str) -> Security:
     return s
 
 
+PRICE_PROVIDER_LABEL = {"jquants": "J-Quants API V2", "tiingo": "Tiingo", "massive": "Massive（旧Polygon.io）"}
+
+
+def latest_quote(session: Session, s: Security) -> Quote:
+    p = session.scalar(select(DailyPrice).where(DailyPrice.security_id == s.id).order_by(DailyPrice.trade_date.desc()).limit(1))
+    cur = CURRENCY.get(s.market, "")
+    if p is None:
+        why = "J-Quants API キー未設定のため未接続" if s.market == "JP" else "米国株の株価API（Tiingo / Massive）が未設定のため未接続"
+        return Quote(price=None, currency=cur, as_of=None, provider=None, is_delayed=None, data_status="not_connected", note=why)
+    stale, age = staleness(p.trade_date, "daily")
+    if p.provider == "jquants":
+        note = jquants.DELAY_NOTE.get(get_settings().jquants_plan, "") + "。リアルタイムの株価ではありません"
+    else:
+        note = "日足の終値。リアルタイムの株価ではありません"
+    return Quote(price=p.close, currency=cur, as_of=p.trade_date, fetched_at=p.fetched_at,
+                 provider=PRICE_PROVIDER_LABEL.get(p.provider, p.provider), is_delayed=True,
+                 data_status="stale" if stale else "ok", note=note)
+
+
 @router.get("/{market}/{code}", response_model=SecurityDetail)
 def detail(market: str, code: str, session: Session = Depends(get_session)) -> SecurityDetail:
     s = get_security(session, market, code)
-    q = Quote(price=None, currency=CURRENCY.get(s.market, ""), as_of=None, provider=None, is_delayed=None,
-              data_status="not_connected", note="株価データの取得はフェーズ3で実装予定")
-    return SecurityDetail(security=to_out(s), quote=q)
+    return SecurityDetail(security=to_out(s), quote=latest_quote(session, s))
+
+
+@router.get("/{market}/{code}/prices")
+def prices(market: str, code: str, days: int = Query(365, ge=5, le=3650), session: Session = Depends(get_session)) -> dict:
+    s = get_security(session, market, code)
+    rows = list(session.scalars(select(DailyPrice).where(DailyPrice.security_id == s.id).order_by(DailyPrice.trade_date.desc()).limit(days)))
+    rows.reverse()
+    return {"data_status": "ok" if rows else "not_connected", "provider": rows[-1].provider if rows else None,
+            "points": [[r.trade_date.isoformat(), r.close, r.volume] for r in rows]}
+
+
+LABELS = {"revenue": "売上高", "gross_profit": "売上総利益", "operating_income": "営業利益", "net_income": "純利益",
+          "eps_diluted": "希薄化EPS", "cfo": "営業キャッシュフロー", "capex": "設備投資", "dividends_paid": "配当支払",
+          "buybacks": "自社株買い", "assets": "総資産", "liabilities": "負債", "equity": "株主資本", "cash": "現金",
+          "debt_noncurrent": "長期借入金", "debt_current": "短期の借入金", "shares_outstanding": "発行済株式数"}
+
+
+@router.get("/{market}/{code}/financials")
+def financials(market: str, code: str, as_of: date | None = Query(None, description="この日までに提出された書類だけを使う"),
+               session: Session = Depends(get_session)) -> dict:
+    s = get_security(session, market, code)
+    snap = snapshot(session, s, as_of)
+    issues = [{"type": q.check_type, "detail": q.detail} for q in session.scalars(
+        select(DataQualityCheck).where(DataQualityCheck.dataset == "sec", DataQualityCheck.subject == s.code))]
+    note = {"JP": "日本株の財務データ（J-Quants の財務情報・EDINET）は未接続",
+            "US": "SEC EDGAR の取得対象外の銘柄（対象は公開流通時価総額の大きい順）"}[s.market] if snap["data_status"] in ("not_connected", "insufficient") else None
+    return {"security": to_out(s).model_dump(), "as_of": as_of, "source": "SEC EDGAR XBRL（企業がSECに提出した書類）" if s.market == "US" else None,
+            "reliability": "一次情報" if s.market == "US" else None, "labels": LABELS, "note": note, "quality_issues": issues, **snap}
 
 
 # (表示名, 実装予定のフェーズ, 表示予定の内容)
@@ -65,9 +116,8 @@ SECTIONS = {
     "score": ("AI総合評価（100点満点）", 4, "9項目の採点内訳・項目ごとの信頼度・根拠・採点できなかった項目を表示します。"),
     "forecast": ("将来株価予測", 5, "1か月・3か月・6か月・1年の上昇／横ばい／下落の確率、期待リターン、株価レンジ、モデルの検証成績を表示します。"),
     "valuation": ("理論株価", 5, "業種に合った評価方法による理論株価の範囲と、その前提・今の株価が前提としている成長率を表示します。"),
-    "financials": ("財務分析", 3, "売上・利益・キャッシュフロー・財務の安全性を、決算書の提出日つきで表示します。"),
-    "technicals": ("テクニカル分析", 3, "移動平均・モメンタム・ボラティリティ・出来高を表示します。"),
-    "news": ("ニュース・開示", 3, "適時開示・8-Kなどの一次情報の件名と、原文へのリンクを表示します。"),
+    "technicals": ("テクニカル分析", 4, "移動平均・モメンタム・ボラティリティ・出来高を表示します（株価データが必要）。"),
+    "news": ("ニュース・開示", 4, "適時開示・8-Kなどの一次情報の件名と、原文へのリンクを表示します。"),
     "peers": ("競合比較", 4, "同じ業種の企業との指標の比較を表示します。"),
     "risk": ("リスク分析", 5, "最悪のシナリオ（下落率）、業種の過去の最大下落、注意すべきリスクを表示します。"),
     "commentary": ("AIによる総合コメント", 5, "保存済みの数値だけをもとに、AIが分析結果を分かりやすく説明します（新しい数値は作りません）。"),

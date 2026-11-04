@@ -29,7 +29,21 @@ def get_session() -> Iterator[Session]:
         yield s
 
 
+# 既存のデータベースに後から追加した列（簡易マイグレーション）。本格的な移行管理はフェーズ7で Alembic に切り替える
+ADDED_COLUMNS = {"securities": {"cik": "INTEGER"}}
+
+
 def init_db(bind=None) -> None:
+    from sqlalchemy import inspect, text
+
     from . import models  # noqa: F401  モデルを登録する
 
-    Base.metadata.create_all(bind=bind or engine)
+    eng = bind or engine
+    Base.metadata.create_all(bind=eng)
+    insp = inspect(eng)
+    with eng.begin() as conn:
+        for table, cols in ADDED_COLUMNS.items():
+            existing = {c["name"] for c in insp.get_columns(table)}
+            for col, ddl in cols.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))

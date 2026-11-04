@@ -7,10 +7,10 @@ from ..config import Settings
 from .base import ProviderInfo, ProviderStatus
 
 PROVIDERS: tuple[ProviderInfo, ...] = (
-    ProviderInfo("jquants", "J-Quants API（日本取引所グループ）", ("prices_jp", "indices_jp", "financials_jp"),
-                 ("JQUANTS_REFRESH_TOKEN",), "https://jpx-jquants.com/", "プランにより遅延・取得範囲が異なる"),
-    ProviderInfo("us_prices", "米国株の株価API（フェーズ3で選定）", ("prices_us", "indices_us"),
-                 ("US_PRICE_PROVIDER", "US_PRICE_API_KEY"), "", "候補を比較して選定する"),
+    ProviderInfo("jquants", "J-Quants API V2（日本取引所グループ）", ("prices_jp", "indices_jp"),
+                 ("JQUANTS_API_KEY",), "https://jpx-jquants.com/", "Freeプランは約12週間遅延"),
+    ProviderInfo("us_prices", "米国株の株価API（Tiingo / Massive）", ("prices_us",),
+                 ("US_PRICE_PROVIDER", "TIINGO_API_KEY or MASSIVE_API_KEY"), "", "docs/phase3_data_sources.md 参照"),
     ProviderInfo("edinet", "EDINET API（金融庁）", ("financials_jp",), ("EDINET_API_KEY",),
                  "https://disclosure2.edinet-fsa.go.jp/", "有価証券報告書等"),
     ProviderInfo("sec_edgar", "SEC EDGAR（米国証券取引委員会）", ("financials_us", "filings_us"), ("SEC_USER_AGENT",),
@@ -19,26 +19,30 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
                  "https://fred.stlouisfed.org/", "経済指標・為替・一部指数の終値"),
 )
 
-# フェーズ2の時点で取得処理を実装済みのプロバイダー（フェーズ3で追加していく）
-IMPLEMENTED: set[str] = set()
+# 取得処理を実装済みのプロバイダー（EDINET は未実装）
+IMPLEMENTED: set[str] = {"jquants", "us_prices", "sec_edgar", "fred"}
 
-_ENV_TO_ATTR = {
-    "JQUANTS_REFRESH_TOKEN": "jquants_refresh_token", "US_PRICE_PROVIDER": "us_price_provider",
-    "US_PRICE_API_KEY": "us_price_api_key", "EDINET_API_KEY": "edinet_api_key", "SEC_USER_AGENT": "sec_user_agent",
-}
+def _is_set(settings: Settings, env: str) -> bool:
+    if env == "TIINGO_API_KEY or MASSIVE_API_KEY":
+        return bool(settings.tiingo_api_key or settings.massive_api_key)
+    if env == "SEC_USER_AGENT":
+        return True  # 未設定でも仮の値で動く（画面に「仮設定」と表示）
+    return bool(getattr(settings, env.lower(), ""))
 
 
 def provider_statuses(settings: Settings) -> list[ProviderStatus]:
     out = []
     for p in PROVIDERS:
-        missing = [env for env in p.requires if not getattr(settings, _ENV_TO_ATTR[env], "")]
+        missing = [env for env in p.requires if not _is_set(settings, env)]
         configured = not missing
         if p.key not in IMPLEMENTED:
-            status, msg = "not_connected", "取得処理は未実装（フェーズ3で実装予定）"
+            status, msg = "not_connected", "取得処理は未実装"
         elif not configured:
-            status, msg = "not_connected", "必要な設定が未入力"
+            status, msg = "not_connected", "APIキー未設定（.env で設定）"
+        elif p.key == "sec_edgar" and settings.sec_ua_is_provisional:
+            status, msg = "ok", "接続中（連絡先は仮設定）"
         else:
-            status, msg = "ok", ""
+            status, msg = "ok", "接続設定済み"
         out.append(ProviderStatus(key=p.key, name=p.name, datasets=p.datasets, configured=configured, status=status,
                                   message=msg, missing_settings=missing, url=p.url))
     return out

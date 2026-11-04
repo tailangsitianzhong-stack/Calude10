@@ -34,6 +34,20 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
 
+  # データ取得ワーカー：API とは別のプロセス。取得に失敗しても API・画面は保存済みのデータで動き続ける
+  worker:
+    build:
+      context: ./backend
+      secrets: [extra_ca]
+    command: ["python", "-m", "app.worker", "schedule"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-asi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-asi}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   web:
     build:
       context: ./frontend

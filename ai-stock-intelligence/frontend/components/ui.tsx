@@ -23,7 +23,7 @@ export function StatusBadge({ status, children }: { status: DataStatus; children
 
 export function Card({ title, aside, children, className = "", id }: { title?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string; id?: string }) {
   return (
-    <section id={id} className={`rounded-card border border-line bg-surface/80 shadow-[0_1px_0_rgb(255_255_255/0.03)_inset] ${className}`}>
+    <section id={id} className={`min-w-0 rounded-card border border-line bg-surface/80 shadow-[0_1px_0_rgb(255_255_255/0.03)_inset] ${className}`}>
       {(title || aside) && (
         <header className="flex items-center justify-between gap-3 border-b border-line/70 px-4 py-3 sm:px-5">
           <h2 className="text-[13px] font-semibold tracking-wide text-ink">{title}</h2>

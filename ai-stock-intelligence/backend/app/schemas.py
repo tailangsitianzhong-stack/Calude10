@@ -27,11 +27,30 @@ class DatasetOut(BaseModel):
     finished_at: datetime | None
 
 
+class DatasetStatus(BaseModel):
+    dataset: str
+    name: str
+    provider: str
+    reliability: str
+    delay: str | None
+    status: DataStatus
+    configured: bool
+    last_run_at: datetime | None
+    last_run_status: str | None
+    last_success_at: datetime | None
+    latest_data_date: date | None
+    rows: int
+    message: str | None
+    quality_issues: int
+    warnings: list[str]
+
+
 class SystemStatus(BaseModel):
     app_version: str
     phase: str
     providers: list[ProviderOut]
     datasets: list[DatasetOut]
+    data_sources: list[DatasetStatus]
     generated_at: datetime
 
 
@@ -41,7 +60,7 @@ class IndexQuote(BaseModel):
     market: str
     value: float | None
     change_pct: float | None
-    as_of: datetime | None
+    as_of: date | datetime | None
     provider: str | None
     is_delayed: bool | None
     data_status: DataStatus
@@ -51,6 +70,7 @@ class IndexQuote(BaseModel):
 class SecurityOut(BaseModel):
     market: str
     code: str
+    cik: int | None = None
     name: str
     exchange: str | None
     sector: str | None
@@ -64,7 +84,8 @@ class SecurityOut(BaseModel):
 class Quote(BaseModel):
     price: float | None
     currency: str
-    as_of: datetime | None
+    as_of: date | datetime | None
+    fetched_at: datetime | None = None
     provider: str | None
     is_delayed: bool | None
     data_status: DataStatus

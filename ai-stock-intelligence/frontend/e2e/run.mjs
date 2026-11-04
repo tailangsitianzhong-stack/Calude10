@@ -50,20 +50,45 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     continue;
   }
 
-  await test(`[${label}] ダッシュボード：主要4指数は未接続で、値を表示しない`, async () => {
+  await test(`[${label}] ダッシュボード：取得できた指数は出所・基準日・遅延つき、TOPIXは未接続`, async () => {
     await page.goto(BASE + "/");
-    for (const k of ["nikkei225", "topix", "sp500", "nasdaq"]) {
+    for (const k of ["nikkei225", "sp500", "nasdaq"]) {
       const card = page.getByTestId(`index-${k}`);
       await card.waitFor();
-      assert((await card.locator('[data-status="not_connected"]').count()) === 1, `${k} に未接続の表示がない`);
-      const big = await card.locator(".num").first().innerText();
-      assert(!/\d/.test(big), `${k} に数値が表示されている：${big}`);
+      const t = await card.innerText();
+      assert(/\d/.test(await card.locator(".num").first().innerText()), `${k} に値がない`);
+      assert(/FRED/.test(t) && /\d{4}\/\d{2}\/\d{2}/.test(t) && /リアルタイムではありません/.test(t), `${k} に出所・基準日・遅延の表示がない：${t}`);
     }
+    const topix = page.getByTestId("index-topix");
+    assert((await topix.locator('[data-status="not_connected"]').count()) === 1, "TOPIX に未接続の表示がない");
+    assert(!/\d/.test(await topix.locator(".num").first().innerText()), "TOPIX に数値が表示されている");
+    const tenY = await page.getByTestId("macro-us_10y").innerText();
+    assert(/\d/.test(tenY) && /\d{4}\/\d{2}\/\d{2}/.test(tenY), `米10年金利に値・基準日がない：${tenY}`);
     const bar = await page.getByRole("status", { name: "データの状態" }).innerText();
-    assert(/株価データ/.test(bar) && /未接続/.test(bar), "上部の状態バーに株価データ未接続の表示がない");
-    assert(/2026\/09\/30/.test(bar), "銘柄マスタの基準日が表示されていない");
+    assert(/日本株の株価/.test(bar) && /未接続/.test(bar), "上部の状態バーに日本株の株価が未接続と表示されていない");
+    assert(/仮設定/.test(bar), "SECの連絡先が仮設定である警告がない");
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/dashboard-${label}.png`, fullPage: true });
+  });
+
+  await test(`[${label}] 米国株の詳細：SECの財務データ（提出日つき）を表示し、株価は未接続`, async () => {
+    await page.goto(BASE + "/stocks/US/KO");
+    const t = await page.getByTestId("financials-table").innerText();
+    assert(/直近4四半期/.test(t) && /提出日/.test(t) && /億ドル/.test(t), `財務の表の内容が想定と違う：${t.slice(0, 120)}`);
+    assert(/SEC EDGAR/.test(await page.locator("#financials").innerText()), "財務データの出所が表示されていない");
+    const quote = await page.getByTestId("quote").innerText();
+    assert(/未接続/.test(quote), "米国株の株価が未接続と表示されていない");
+    await noHorizontalOverflow(page);
+    if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-us-${label}.png`, fullPage: true });
+  });
+
+  await test(`[${label}] データの状態ページ`, async () => {
+    await page.goto(BASE + "/data");
+    const fred = await page.getByTestId("ds-fred").innerText();
+    assert(/FRED/.test(fred) && /公的統計/.test(fred) && /\d{4}\/\d{2}\/\d{2}/.test(fred), "FREDの状態が表示されていない");
+    const jp = await page.getByTestId("ds-prices_jp").innerText();
+    assert(/J-Quants/.test(jp), "J-Quants の行がない");
+    await noHorizontalOverflow(page);
   });
 
   await test(`[${label}] 検索（日本語）→ 詳細ページ`, async () => {
@@ -80,7 +105,7 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     await page.getByTestId("security-name").waitFor();
     assert((await page.getByTestId("security-name").innerText()) === "トヨタ自動車", "詳細ページの銘柄名が違う");
     const quote = await page.getByTestId("quote").innerText();
-    assert(/未接続/.test(quote) && !/\d{2,}/.test(quote.replace(/JPY|フェーズ3/g, "")), `株価に数値が表示されている：${quote}`);
+    assert(/未接続/.test(quote) && !/\d{2,}/.test(quote.replace(/JPY/g, "")), `株価に数値が表示されている：${quote}`);
     assert(/未評価/.test(await page.locator("main").innerText()), "総合評価が「未評価」になっていない");
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-${label}.png`, fullPage: true });

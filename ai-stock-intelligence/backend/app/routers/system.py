@@ -9,7 +9,8 @@ from ..config import get_settings
 from ..db import get_session
 from ..models import IngestionRun
 from ..providers.registry import provider_statuses
-from ..schemas import DatasetOut, ProviderOut, SystemStatus
+from ..schemas import DatasetOut, DatasetStatus, ProviderOut, SystemStatus
+from ..services.datasets import dataset_status
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
 
@@ -24,5 +25,6 @@ def status(session: Session = Depends(get_session)) -> SystemStatus:
     runs = session.scalars(select(IngestionRun).where(IngestionRun.id.in_(ids))).all() if ids else []
     ds = [DatasetOut(dataset=r.dataset, source=r.source, status=r.status, rows=r.rows, source_as_of=r.source_as_of,
                      finished_at=r.finished_at) for r in sorted(runs, key=lambda r: r.dataset)]
-    return SystemStatus(app_version=__version__, phase="フェーズ2（Webの基本構築）", providers=provs, datasets=ds,
+    return SystemStatus(app_version=__version__, phase="フェーズ3（金融データ連携）", providers=provs, datasets=ds,
+                        data_sources=[DatasetStatus(**d) for d in dataset_status(session)],
                         generated_at=datetime.now(timezone.utc))

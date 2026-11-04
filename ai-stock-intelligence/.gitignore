@@ -9,3 +9,4 @@ frontend/e2e/screenshots/
 *.sqlite3
 .extra-ca.pem
 *.tsbuildinfo
+docker-compose.override.yml

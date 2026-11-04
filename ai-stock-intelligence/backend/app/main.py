@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .db import init_db
-from .routers import market, securities, system
+from .routers import macro, market, securities, system
 
 
 @asynccontextmanager
@@ -18,6 +18,7 @@ app = FastAPI(title="AI STOCK INTELLIGENCE API", version=__version__, lifespan=l
 app.include_router(system.router)
 app.include_router(market.router)
 app.include_router(securities.router)
+app.include_router(macro.router)
 
 
 @app.get("/healthz")

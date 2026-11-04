@@ -50,11 +50,13 @@ def test_no_fabricated_market_data(client, raw_files):
 def test_system_status_reports_unconnected_providers_and_datasets(client, raw_files):
     load(raw_files)
     st = client.get("/api/v1/system/status").json()
-    assert all(p["status"] == "not_connected" for p in st["providers"])
+    prov = {p["key"]: p for p in st["providers"]}
+    assert prov["jquants"]["status"] == "not_connected" and prov["us_prices"]["status"] == "not_connected"
+    assert prov["edinet"]["status"] == "not_connected"
     ds = {d["dataset"]: d for d in st["datasets"]}
     assert ds["securities_jp"]["rows"] == 4 and ds["securities_jp"]["source_as_of"] == "2026-09-30"
     # 秘密情報の値は返さない（設定名だけを返す）
-    assert "JQUANTS_REFRESH_TOKEN" in str(st) and "change-me" not in str(st)
+    assert "JQUANTS_API_KEY" in str(st) and "change-me" not in str(st)
 
 
 def test_delisted_kept_inactive(client, raw_files):
@@ -78,3 +80,23 @@ def test_search_orders_large_caps_first(client, raw_files):
         s.commit()
     r = client.get("/api/v1/securities", params={"query": "トヨタ"}).json()
     assert [i["code"] for i in r["items"]][:2] == ["7203", "3116"]
+
+
+def test_market_overview_uses_stored_index_and_marks_topix_unconnected(client):
+    from datetime import date, datetime, timezone
+    from app.models import IndexBar
+    with SessionLocal() as s:
+        now = datetime.now(timezone.utc)
+        s.add_all([IndexBar(index_key="sp500", trade_date=date.today(), close=110.0, provider="FRED", fetched_at=now),
+                   IndexBar(index_key="sp500", trade_date=date(2020, 1, 2), close=100.0, provider="FRED", fetched_at=now)])
+        s.commit()
+    ov = {q["key"]: q for q in client.get("/api/v1/market/overview").json()}
+    assert ov["sp500"]["value"] == 110.0 and ov["sp500"]["is_delayed"] is True and "リアルタイムではありません" in ov["sp500"]["note"]
+    assert ov["topix"]["value"] is None and ov["topix"]["data_status"] == "not_connected"
+
+
+def test_status_reports_provisional_sec_contact_and_unconnected_price_apis(client):
+    st = client.get("/api/v1/system/status").json()
+    ds = {d["dataset"]: d for d in st["data_sources"]}
+    assert ds["prices_jp"]["status"] == "not_connected" and ds["prices_us"]["status"] == "not_connected"
+    assert any("仮設定" in w for w in ds["sec_financials"]["warnings"])
