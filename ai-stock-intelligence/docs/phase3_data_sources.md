@@ -113,7 +113,7 @@
 ```
 US_PRICE_PROVIDER=massive
 MASSIVE_API_KEY=キー
-MASSIVE_BASE_URL=https://api.polygon.io
+MASSIVE_BASE_URL=https://api.massive.com   # 省略可（既定。旧 https://api.polygon.io も同じ応答）
 ```
 
 ### 4.5 SEC EDGAR（財務データ）
@@ -163,7 +163,9 @@ SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 | `US_PRICE_PROVIDER` | worker・api | 米国株に必要 | `tiingo`（または `massive` / `polygon`） | 米国株の株価の取得元 |
 | `TIINGO_API_KEY` | worker | Tiingo を使う場合 | Tiingo のトークン | Tiingo |
 | `MASSIVE_API_KEY` | worker | Massive を使う場合 | Massive（旧Polygon.io）のキー | 旧名 `POLYGON_API_KEY` でも可 |
-| `MASSIVE_BASE_URL` | worker | — | 空（`https://api.polygon.io`） | 旧名 `POLYGON_BASE_URL` でも可 |
+| `MASSIVE_BASE_URL` | worker | — | 空（`https://api.massive.com`。公式ドキュメントの接続先） | 旧名 `POLYGON_BASE_URL` でも可 |
+| `US_PRICE_FALLBACK` | worker | — | 空（キーのあるもう一方） | 主の取得元が使えないときの代替（tiingo / massive） |
+| `MASSIVE_MAX_DAYS` | worker | — | `60` | Massive で1回に取得する営業日の数（無料プランは5リクエスト/分） |
 | `SEC_USER_AGENT` | worker | 必須（SEC） | `AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン` | SECの規則（アプリ名と連絡先）。空なら SEC から取得しない |
 | `SEC_UNIVERSE_SIZE` | worker | — | `150` | 財務データを取得する米国株の数 |
 | `SEC_EXTRA_TICKERS` | worker | — | `KO,PEP,MU,JPM,KDP` | 必ず含める銘柄 |
@@ -185,8 +187,8 @@ SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 |---|---|---|---|---|---|
 | J-Quants | `api.jquants.com` | `/v2/` | `x-api-key` | （空） | APIキー |
 | Tiingo | `api.tiingo.com` | （空） | `Authorization` | `Token` | トークン |
-| Massive（旧Polygon） | `api.polygon.io` | （空） | `Authorization` | `Bearer` | キー |
+| Massive（旧Polygon） | `api.massive.com` | （空） | `Authorization` | `Bearer` | キー |
 
 - FRED はキーを URL に含める方式のため、ネットワークシークレットでは渡せない（キー不要の公開データで動く）。
 - SEC の User-Agent は秘密情報ではないため、環境変数 `SEC_USER_AGENT` に設定する。
-- 環境変数として設定するもの：`NETWORK_SECRETS=jquants,tiingo`、`US_PRICE_PROVIDER=tiingo`、`JQUANTS_PLAN=free`、`SEC_USER_AGENT=...`
+- 環境変数として設定するもの：`NETWORK_SECRETS=jquants,tiingo,massive`、`US_PRICE_PROVIDER=tiingo`、`JQUANTS_PLAN=free`、`SEC_USER_AGENT=...`
