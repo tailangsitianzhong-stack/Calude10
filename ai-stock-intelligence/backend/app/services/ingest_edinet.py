@@ -7,7 +7,7 @@
 """
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -81,14 +81,21 @@ UNAVAILABLE_REASON = {
 }
 
 
-def record_unavailable(session: Session, code: str, doc_id: str, standard: str | None, values: dict) -> bool:
-    """書類から負債の合計を取り出せなかったことを品質の記録に残す（既存の値は変えない）。"""
+def unavailable_type(standard: str | None) -> str:
+    """負債を取り出せなかった理由の種類：us_gaap（米国基準のため取得不可）／no_liabilities_element（負債の要素がない）。"""
+    return "us_gaap" if standard == "USGAAP" else "no_liabilities_element"
+
+
+def record_unavailable(session: Session, code: str, doc_id: str, standard: str | None, values: dict) -> str | None:
+    """書類から負債の合計を取り出せなかったことを品質の記録に残す（既存の値は変えない）。取得の失敗ではない。
+    戻り値は理由の種類（unavailable_type）。負債を取り出せたときは None。"""
     if "liabilities" in values:
-        return False
+        return None
+    kind = unavailable_type(standard)
     session.add(DataQualityCheck(dataset=QUALITY, subject=code, check_type="liabilities_unavailable", severity="info",
-                                 detail={"doc_id": doc_id, "standard": standard,
+                                 detail={"doc_id": doc_id, "standard": standard, "reason_type": kind,
                                          "reason": UNAVAILABLE_REASON.get(standard or "", "負債の合計の要素が見つからない")}))
-    return True
+    return kind
 
 
 def recheck(session: Session) -> dict:
@@ -97,7 +104,8 @@ def recheck(session: Session) -> dict:
     from sqlalchemy import delete
     session.execute(delete(DataQualityCheck).where(DataQualityCheck.dataset == QUALITY,
                                                    DataQualityCheck.check_type.in_(("inconsistent", "liabilities_unavailable"))))
-    stats = {"documents": 0, "checks": 0, "mismatch": 0, "rounding": 0, "unavailable": 0}
+    stats = {"documents": 0, "checks": 0, "mismatch": 0, "rounding": 0, "unavailable": 0,
+             "unavailable_no_liabilities_element": 0, "unavailable_us_gaap": 0}
     for doc in session.scalars(select(EdinetDocument).where(EdinetDocument.parse_status == "parsed")):
         code = doc.sec_code[:4]
         vals = {f.concept: {"value": f.value} for f in session.scalars(
@@ -108,13 +116,69 @@ def recheck(session: Session) -> dict:
         stats["checks"] += len(checks)
         stats["mismatch"] += sum(c["result"] == "不一致" for c in checks)
         stats["rounding"] += sum(c["result"] == "表示単位の丸め" for c in checks)
-        stats["unavailable"] += record_unavailable(session, code, doc.doc_id, doc.accounting_standard, vals)
+        kind = record_unavailable(session, code, doc.doc_id, doc.accounting_standard, vals)
+        if kind:
+            stats["unavailable"] += 1
+            stats[f"unavailable_{kind}"] += 1
         doc.detail = {**(doc.detail or {}), "cross_check": checks}
     session.commit()
     return stats
 
 
 LIST_DATASET = "edinet_list"  # 全銘柄（日本の普通株すべて）を対象に、書類一覧を処理し終えた提出日
+MISMATCH_STOP_RATE = 0.10  # 不一致率がこれを超えたら自動停止する（バッチ単位・累計のどちらか）
+MISMATCH_MIN_DOCS = 100  # 照合できた書類がこの件数を超えてから判定する（少ない件数ではぶれが大きい）
+
+
+def compared_and_mismatch(checks: list[dict]) -> tuple[int, int]:
+    """1件の書類の照合結果を（照合できたか, 不一致があったか）の 0/1 にする。
+    照合できた＝同じ期末・同じ会計基準の決算短信と、総資産か純資産を比べられた。不一致＝1項目以上が「不一致」。"""
+    return (1 if checks else 0), (1 if any(c.get("result") == "不一致" for c in checks) else 0)
+
+
+def mismatch_totals(session: Session) -> tuple[int, int]:
+    """保存済みの全書類（読み取り済み）の（照合できた書類数, 不一致のあった書類数）。累計の不一致率の元。"""
+    n = m = 0
+    for (detail,) in session.execute(select(EdinetDocument.detail).where(EdinetDocument.parse_status == "parsed")):
+        c, x = compared_and_mismatch((detail or {}).get("cross_check") or [])
+        n, m = n + c, m + x
+    return n, m
+
+
+def mismatch_exceeded(compared: int, mismatched: int, rate: float) -> bool:
+    return compared > MISMATCH_MIN_DOCS and mismatched / compared > rate
+
+
+def validate_stop_rate(rate) -> float:
+    """不一致率の停止基準は 0 より大きく 1 以下（NaN・0・負の値・1 超は拒否する）。"""
+    try:
+        r = float(rate)
+    except (TypeError, ValueError):
+        raise ValueError(f"不一致率の停止基準は 0 より大きく 1 以下の数で指定してください（指定値：{rate!r}）") from None
+    if not (0 < r <= 1):  # NaN もここで拒否される
+        raise ValueError(f"不一致率の停止基準は 0 より大きく 1 以下で指定してください（指定値：{rate!r}）")
+    return r
+
+
+# 実行ごとの要約を、品質の記録の表（JSON の列）に構造化して残す（DB の構造は変えない）。
+# 実行記録のメッセージは1,000文字で切れるため、認証エラー・停止の理由・再開の指定・件数はこちらで集計する。
+# dataset=edinet_run は画面・API の品質の表示の対象外（routers・datasets は参照しない）。
+RUN_SUMMARY = "edinet_run"
+
+
+def save_run_summary(session: Session, run: IngestionRun, summary: dict) -> None:
+    session.add(DataQualityCheck(dataset=RUN_SUMMARY, subject=str(run.id), check_type="run_summary",
+                                 severity="error" if summary.get("auth_error") or summary.get("mismatch_stop") else "info",
+                                 detail={"run_id": run.id, **summary}))
+
+
+def last_run_summary(session: Session) -> dict | None:
+    """直前の EDINET の取得の実行（API 接続の有無を問わない）の要約。なければ None。"""
+    d = session.scalar(select(DataQualityCheck.detail).where(DataQualityCheck.dataset == RUN_SUMMARY)
+                       .order_by(DataQualityCheck.id.desc()).limit(1))
+    return d
+
+
 DEFAULT_MAX_DOCS = 200  # 全銘柄を対象にするときの、1回（1バッチ）あたりの書類の取得数の上限（指定がない場合）
 
 
@@ -135,12 +199,16 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
     now = datetime.now(timezone.utc)
     keep = {k: meta.get(k) for k in ("edinetCode", "filerName", "formCode", "docTypeCode", "docDescription",
                                      "periodStart", "periodEnd", "submitDateTime", "parentDocID", "csvFlag")}
+    stage = "api"  # 失敗の種類：api（取得の通信・応答のエラー）／parse（書類の読み取りのエラー）／store（保存・照合の内部エラー）
     try:
-        parsed = edinet.parse_csv_package(client.csv_package(meta["docID"]))
+        package = client.csv_package(meta["docID"])
+        stage = "parse"
+        parsed = edinet.parse_csv_package(package)
+        stage = "store"
         added, existing = store_document(session, meta, parsed, sec.id, now)
         checks = cross_check(session, sec.id, sec.code, parsed["period_end"], parsed["values"], parsed["accounting_standard"],
                              edinet_doc_id=meta["docID"], edinet_submitted_at=meta["submitDateTime"])
-        record_unavailable(session, sec.code, meta["docID"], parsed["accounting_standard"], parsed["values"])
+        unavailable = record_unavailable(session, sec.code, meta["docID"], parsed["accounting_standard"], parsed["values"])
         session.add(EdinetDocument(
             doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),
             filer_name=meta.get("filerName"), form_code=meta["formCode"], doc_description=meta.get("docDescription"),
@@ -159,6 +227,11 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
         stats["facts_existing"] += existing
         stats["checks"] += len(checks)
         stats["check_mismatch"] += sum(not c["match"] for c in checks)
+        compared, mismatched = compared_and_mismatch(checks)
+        stats["documents_compared"] += compared
+        stats["documents_mismatch"] += mismatched
+        if unavailable:  # 取得の失敗ではない（読み取りは成功）。種類ごとに数える
+            stats[f"liabilities_unavailable_{unavailable}"] += 1
         return "parsed"
     except edinet.EdinetAuthError:
         # 認証の失敗は書類の問題ではない：書類を「失敗」と記録せず、実行全体を止める（呼び出し元で処理）
@@ -168,7 +241,7 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
     except Exception as e:  # 1件の書類の失敗で他を止めない。失敗も記録して原因を追えるようにする
         session.rollback()
         forget_pending(session)
-        errors.append(f"{meta['docID']}: {redact(str(e))[:150]}")
+        errors.append(f"{meta['docID']}（{stage}）: {redact(str(e))[:150]}")
         # ロールバックで、前回の「失敗」の記録（再試行の前に消したもの）が戻る。戻った場合は内容を更新する
         # （以前は同じ書類番号で新しい行を追加しようとして一意制約に反し、実行全体が止まっていた）
         failed = session.get(EdinetDocument, meta["docID"])
@@ -177,18 +250,53 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
                 doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),
                 filer_name=meta.get("filerName"), form_code=meta["formCode"], doc_description=meta.get("docDescription"),
                 submitted_at=meta["submitDateTime"], period_end=None, accounting_standard=None, parse_status="failed",
-                detail={"meta": keep, "error": redact(str(e))[:300]}, fetched_at=now))
+                detail={"meta": keep, "error": redact(str(e))[:300], "error_type": stage}, fetched_at=now))
         else:
             failed.parse_status, failed.fetched_at = "failed", now
-            failed.detail = {**(failed.detail or {}), "meta": keep, "error": redact(str(e))[:300],
+            failed.detail = {**(failed.detail or {}), "meta": keep, "error": redact(str(e))[:300], "error_type": stage,
                              "attempts": int((failed.detail or {}).get("attempts", 1)) + 1}
         session.commit()
         stats["documents_failed"] += 1
+        stats[f"documents_failed_{stage}"] += 1
         return "failed"
 
 
+def report(session: Session) -> dict:
+    """保存済みの記録だけから、失敗・負債なし・不一致率を種類ごとに数える（読み取りのみ。何も書き込まない）。
+    error_type・reason_type がない以前の記録は、種類を推定せず「unknown」（負債なしは会計基準から判定）として数える。
+    認証エラー・停止・再開は、実行ごとの構造化した要約（dataset=edinet_run）から数える（メッセージの文字列は使わない）。"""
+    from collections import Counter
+    failed = Counter()
+    for (detail,) in session.execute(select(EdinetDocument.detail).where(EdinetDocument.parse_status == "failed")):
+        failed[(detail or {}).get("error_type", "unknown")] += 1
+    unavailable = Counter()
+    for (detail,) in session.execute(select(DataQualityCheck.detail).where(
+            DataQualityCheck.dataset == QUALITY, DataQualityCheck.check_type == "liabilities_unavailable")):
+        d = detail or {}
+        unavailable[d.get("reason_type") or unavailable_type(d.get("standard"))] += 1
+    parsed = session.scalar(select(func.count()).select_from(EdinetDocument).where(EdinetDocument.parse_status == "parsed"))
+    compared, mismatched = mismatch_totals(session)
+    summaries = [d or {} for (d,) in session.execute(select(DataQualityCheck.detail).where(
+        DataQualityCheck.dataset == RUN_SUMMARY).order_by(DataQualityCheck.id))]
+    return {
+        "documents_parsed": parsed,
+        "documents_failed": sum(failed.values()),
+        "documents_failed_by_type": {k: failed.get(k, 0) for k in ("api", "parse", "store", "unknown")},
+        "failure_rate": (round(sum(failed.values()) / (parsed + sum(failed.values())), 4)
+                         if parsed + sum(failed.values()) else None),
+        "runs_with_summary": len(summaries),
+        "auth_error_runs": sum(bool(s.get("auth_error")) for s in summaries),
+        "liabilities_unavailable_by_type": {k: unavailable.get(k, 0) for k in ("no_liabilities_element", "us_gaap")},
+        "documents_compared": compared, "documents_mismatch": mismatched,
+        "mismatch_rate_cumulative": round(mismatched / compared, 4) if compared else None,
+        "mismatch_stopped_runs": [s.get("run_id") for s in summaries if s.get("mismatch_stop")],
+        "resumed_after_mismatch_stop_runs": [s.get("run_id") for s in summaries if s.get("resumed_after_mismatch_stop")],
+    }
+
+
 def run(session: Session, codes: list[str] | None = None, start: date | None = None, end: date | None = None,
-        recheck_only: bool = False, all_listed: bool = False, max_docs: int | None = None) -> IngestionRun:
+        recheck_only: bool = False, all_listed: bool = False, max_docs: int | None = None,
+        mismatch_stop_rate: float = MISMATCH_STOP_RATE, resume_after_mismatch_stop: bool = False) -> IngestionRun:
     """start〜end に提出された決算書類を取得する。
 
     - codes（4桁の証券コード）を指定するか、all_listed=True で日本の普通株すべて（上場中）を対象にする。
@@ -196,7 +304,14 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
     - all_listed のときは、書類一覧を処理し終えた提出日を fetch_log（edinet_list）に記録し、次の実行では取り直さない。
       上限に達して途中で止まった提出日は記録しないので、次の実行でその日の残りから続ける（読み取り済みはスキップ）。
     - 前回失敗した書類は、書類一覧を取り直さずに、保存しておいたメタデータから先に再試行する。
-    - recheck_only なら API に接続せず、保存済みの値から品質の記録を作り直す。"""
+    - recheck_only なら API に接続せず、保存済みの値から品質の記録を作り直す。
+    - 不一致率（不一致のあった書類 ÷ 照合できた書類）をこの実行（バッチ）と全実行の累計で数え、照合できた書類が
+      MISMATCH_MIN_DOCS 件を超えてどちらかが mismatch_stop_rate を超えたら、その場で止める（その日は「処理済み」にしない）。
+      開始時点で累計がすでに超えていれば、API に接続せずに止める。
+    - 直前の実行が不一致率で止まった（または止まったまま開始しなかった）ときは、resume_after_mismatch_stop=True
+      （--resume-after-mismatch-stop）の指定がない限り、API に接続せずに止める。指定の有無は実行の要約に残す。
+    - 認証エラー（401）で止まった実行は、読み取り済みの書類があっても failed とする。"""
+    mismatch_stop_rate = validate_stop_rate(mismatch_stop_rate)  # 不正な値は、何も記録・接続する前に拒否する
     st = get_settings()
     if recheck_only:
         stats = recheck(session)
@@ -218,19 +333,64 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
         run.status, run.message, run.finished_at = "skipped", "EDINET_API_KEY が未設定", datetime.now(timezone.utc)
         session.commit()
         return run
+    base_compared, base_mismatch = mismatch_totals(session)
+    last_run = last_run_summary(session) or {}
+    prev_stop = last_run.get("mismatch_stop")
+
+    def blocked(reason: dict, text: str) -> IngestionRun:  # API に接続せずに止める（要約に理由と再開の指定の有無を残す）
+        run.status, run.finished_at = "failed", datetime.now(timezone.utc)
+        run.message = text[:1000]
+        save_run_summary(session, run, {
+            "status": "failed", "blocked_before_start": True, "mismatch_stop": reason, "auth_error": False,
+            "resume_after_mismatch_stop": resume_after_mismatch_stop, "resumed_after_mismatch_stop": False,
+            "previous_run_id": last_run.get("run_id"), "mismatch_stop_rate": mismatch_stop_rate,
+            "cumulative": {"compared": base_compared, "mismatch": base_mismatch}})
+        session.commit()
+        return run
+
+    if prev_stop and not resume_after_mismatch_stop:
+        return blocked({**prev_stop, "scope": "previous_run", "previous_scope": prev_stop.get("scope")},
+                       f"不一致率の停止基準により開始しない：直前の実行（ID {last_run.get('run_id')}）が不一致率で停止しています"
+                       f"（{prev_stop.get('text', '')}）。原因を確認し、再開する場合は --resume-after-mismatch-stop を指定する")
+    if mismatch_exceeded(base_compared, base_mismatch, mismatch_stop_rate):
+        return blocked({"scope": "cumulative_at_start", "compared": base_compared, "mismatch": base_mismatch,
+                        "rate": round(base_mismatch / base_compared, 4), "threshold": mismatch_stop_rate},
+                       f"不一致率の停止基準により開始しない：累計 {base_mismatch}/{base_compared} 件"
+                       f"（{base_mismatch / base_compared:.1%}）が {mismatch_stop_rate:.0%} を超えている。原因を確認してから再開する")
     q = select(Security).where(Security.market == "JP")
     q = q.where(Security.security_type == "common", Security.is_active.is_(True)) if all_listed else q.where(Security.code.in_(codes or []))
     targets = {_sec5(s.code): s for s in session.scalars(q)}
     client = edinet.EdinetClient(st.edinet_api_key.strip())
     stats = {"targets": len(targets), "list_requests": 0, "dates_skipped_listed": 0, "documents_found": 0,
              "documents_parsed": 0, "documents_failed": 0, "documents_retried": 0, "documents_skipped_existing": 0,
-             "facts_added": 0, "facts_existing": 0, "checks": 0, "check_mismatch": 0, "limit_reached": False}
+             "facts_added": 0, "facts_existing": 0, "checks": 0, "check_mismatch": 0, "limit_reached": False,
+             # 失敗の種類（取得の失敗として数える）。認証エラー（401）は書類の失敗にせず、実行を止めて auth_error に記録する
+             "documents_failed_api": 0, "documents_failed_parse": 0, "documents_failed_store": 0, "list_errors": 0,
+             "auth_error": False,
+             # 負債を取り出せなかった書類（取得の失敗ではない）
+             "liabilities_unavailable_no_liabilities_element": 0, "liabilities_unavailable_us_gaap": 0,
+             # 不一致率：照合できた書類と、不一致のあった書類（この実行の分）
+             "documents_compared": 0, "documents_mismatch": 0, "mismatch_stop": None}
     errors: list[str] = []
     downloads = 0
     attempted: set[str] = set()  # この実行で処理を試みた書類（失敗した書類を同じ実行で2回試さない）
 
     def room() -> bool:
         return max_docs is None or downloads < max_docs
+
+    def mismatch_stop() -> bool:
+        """不一致率がバッチ単位・累計のどちらかで基準を超えたら止める。超えたときは理由を stats に残す。"""
+        if stats["mismatch_stop"]:
+            return True
+        bc, bm = stats["documents_compared"], stats["documents_mismatch"]
+        cc, cm = base_compared + bc, base_mismatch + bm
+        for scope, name, c, m in (("batch", "バッチ", bc, bm), ("cumulative", "累計", cc, cm)):
+            if mismatch_exceeded(c, m, mismatch_stop_rate):
+                stats["mismatch_stop"] = {"scope": scope, "compared": c, "mismatch": m, "rate": round(m / c, 4),
+                                          "threshold": mismatch_stop_rate,
+                                          "text": f"{name}の不一致率 {m}/{c} 件（{m / c:.1%}）が {mismatch_stop_rate:.0%} を超えた"}
+                return True
+        return False
 
     try:
         try:
@@ -239,6 +399,8 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                                                                         EdinetDocument.sec_code.in_(list(targets)))
                                           .order_by(EdinetDocument.submitted_at)))
             for doc in failed:
+                if mismatch_stop():
+                    break
                 if not room():
                     stats["limit_reached"] = True
                     break
@@ -251,7 +413,7 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
             # 2) 提出日ごとに書類一覧を取得し、対象の決算書類を読み取る
             listed = {k for (k,) in session.execute(select(FetchLog.key).where(FetchLog.dataset == LIST_DATASET))} if all_listed else set()
             d = start
-            while d <= end and not stats["limit_reached"]:
+            while d <= end and not stats["limit_reached"] and not mismatch_stop():
                 if d.weekday() < 5:
                     if d.isoformat() in listed:
                         stats["dates_skipped_listed"] += 1
@@ -262,9 +424,11 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                         stats["list_requests"] += 1
                     except edinet.EdinetAuthError as e:
                         errors.append(str(e))
+                        stats["auth_error"] = True
                         break
                     except Exception as e:  # この日は記録しないので、次の実行で取り直す
-                        errors.append(f"{d}: {redact(str(e))[:150]}")
+                        stats["list_errors"] += 1
+                        errors.append(f"{d}（書類一覧）: {redact(str(e))[:150]}")
                         d += timedelta(days=1)
                         continue
                     complete = True
@@ -274,6 +438,9 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                         if (prev and prev.parse_status == "parsed") or meta["docID"] in attempted:
                             stats["documents_skipped_existing"] += 1  # 読み取り済み、またはこの実行で再試行済み（失敗は記録済み）
                             continue
+                        if mismatch_stop():  # 不一致率の停止：この日の残りは次の実行で（この日は「処理済み」にしない）
+                            complete = False
+                            break
                         if not room():  # 上限：この日の残りは次の実行で（この日は「処理済み」にしない）
                             stats["limit_reached"] = True
                             complete = False
@@ -281,6 +448,8 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                         _process_document(session, client, meta, targets[meta["secCode"]], stats, errors)
                         attempted.add(meta["docID"])
                         downloads += 1  # 失敗した書類も記録済みで、次の実行の 1) で再試行される
+                    if complete and mismatch_stop():  # この日の最後の書類で基準を超えた：この日も「処理済み」にしない
+                        complete = False
                     if complete and all_listed:
                         log = session.scalar(select(FetchLog).where(FetchLog.dataset == LIST_DATASET, FetchLog.key == d.isoformat()))
                         if log is None:
@@ -296,6 +465,34 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
     run = session.get(IngestionRun, run.id)
     run.rows, run.finished_at = stats["facts_added"], datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if stats["documents_parsed"] else "failed")
-    run.message = ("; ".join([str(stats)] + errors[:5]))[:1000]
+    head = []
+    if stats["auth_error"]:  # 認証エラーで止まった実行は、読み取り済みの書類があっても「失敗」
+        run.status = "failed"
+        head.append("認証エラー（401）で停止")
+    if stats["mismatch_stop"]:  # 自動停止は「失敗」として示し、原因の確認を求める
+        run.status = "failed"
+        head.append(f"不一致率の停止基準により自動停止：{stats['mismatch_stop']['text']}。原因を確認し、"
+                    "再開する場合は --resume-after-mismatch-stop を指定する")
+    if resume_after_mismatch_stop and prev_stop:
+        head.append(f"直前の実行（ID {last_run.get('run_id')}）の不一致率による停止のあと、再開の指定により実行")
+    bc, bm = stats["documents_compared"], stats["documents_mismatch"]
+    cc, cm = base_compared + bc, base_mismatch + bm
+    stats["mismatch_rate_batch"] = f"{bm}/{bc}" + (f"（{bm / bc:.1%}）" if bc else "")
+    stats["mismatch_rate_cumulative"] = f"{cm}/{cc}" + (f"（{cm / cc:.1%}）" if cc else "")
+    # 要約（失敗の種類・不一致率）を先頭に置く（メッセージは1,000文字で切るため）
+    head.append(f"取得の失敗 {stats['documents_failed']}（API通信 {stats['documents_failed_api']}・"
+                f"書類の読み取り {stats['documents_failed_parse']}・保存 {stats['documents_failed_store']}）"
+                f"・書類一覧の失敗 {stats['list_errors']}・認証エラー {'あり' if stats['auth_error'] else 'なし'}"
+                f"・負債なし（失敗ではない）{stats['liabilities_unavailable_no_liabilities_element']}"
+                f"・米国基準で負債取得不可（失敗ではない）{stats['liabilities_unavailable_us_gaap']}"
+                f"・不一致率 バッチ {stats['mismatch_rate_batch']} 累計 {stats['mismatch_rate_cumulative']}")
+    run.message = ("; ".join(head + [str(stats)] + errors[:5]))[:1000]
+    save_run_summary(session, run, {
+        "status": run.status, "blocked_before_start": False, "auth_error": stats["auth_error"],
+        "mismatch_stop": stats["mismatch_stop"], "resume_after_mismatch_stop": resume_after_mismatch_stop,
+        "resumed_after_mismatch_stop": bool(resume_after_mismatch_stop and prev_stop),
+        "previous_run_id": last_run.get("run_id"), "mismatch_stop_rate": mismatch_stop_rate,
+        "stats": {k: v for k, v in stats.items() if k != "mismatch_stop"},
+        "errors_total": len(errors), "errors": [e[:200] for e in errors[:50]]})  # メッセージで切れたエラーもここに残す
     session.commit()
     return run
