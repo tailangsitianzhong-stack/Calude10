@@ -44,6 +44,18 @@ class EdinetAuthError(PermissionError):
     pass
 
 
+def json_status(j) -> str:
+    """EDINET の JSON 応答の状態コード（書類一覧は metadata.status、エラーは StatusCode／statusCode など）。不明なら ""。
+    認証の拒否が HTTP 200 の本文で返る場合に備えて、本文の状態コードも確認する（実際の応答形式は未確認のため防御的に）。"""
+    if not isinstance(j, dict):
+        return ""
+    meta = j.get("metadata") if isinstance(j.get("metadata"), dict) else {}
+    for v in (meta.get("status"), j.get("StatusCode"), j.get("statusCode"), j.get("status")):
+        if v not in (None, ""):
+            return str(v).strip()
+    return ""
+
+
 class EdinetClient:
     def __init__(self, api_key: str):
         if not api_key:
@@ -61,7 +73,7 @@ class EdinetClient:
 
     def documents(self, d: date) -> list[dict]:
         j = self._get("/documents.json", {"date": d.isoformat(), "type": 2}).json()
-        status = str((j.get("metadata") or {}).get("status", j.get("StatusCode", "")))
+        status = json_status(j)
         if status == "401":
             raise EdinetAuthError("EDINET の認証に失敗しました（401）")
         if status != "200":
@@ -71,7 +83,13 @@ class EdinetClient:
     def csv_package(self, doc_id: str) -> bytes:
         r = self._get(f"/documents/{doc_id}", {"type": 5})
         if "json" in r.headers.get("Content-Type", ""):  # エラーは JSON、成功は ZIP（公式仕様）
-            raise RuntimeError(f"EDINET 書類取得のエラー応答（{doc_id}）")
+            try:
+                status = json_status(r.json())
+            except ValueError:
+                status = ""
+            if status == "401":  # 本文で認証の拒否を示す場合も、認証エラーとして実行全体を止める
+                raise EdinetAuthError("EDINET の認証に失敗しました（401）")
+            raise RuntimeError(f"EDINET 書類取得のエラー応答（{doc_id}、status {status or '不明'}）")
         return r.content
 
     def close(self):
@@ -120,8 +138,10 @@ def parse_csv_package(data: bytes) -> dict:
                 except ValueError:
                     problems.append({"concept": concept, "reason": "数値に変換できない", "value": r[8][:40]})
                 break
-    pe = dei.get("CurrentPeriodEndDateDEI")
-    return {"period_end": date.fromisoformat(pe) if pe else None,
+    pe = (dei.get("CurrentPeriodEndDateDEI") or "").strip()
+    if not pe:  # 期末日がなければ、どの期の値か決められない：読み取りのエラーにする（保存の段階に進めない）
+        raise ValueError("期末日（CurrentPeriodEndDateDEI）がない")
+    return {"period_end": date.fromisoformat(pe),
             "fy_start": date.fromisoformat(dei["CurrentFiscalYearStartDateDEI"]) if dei.get("CurrentFiscalYearStartDateDEI") else None,
             "fy_end": date.fromisoformat(dei["CurrentFiscalYearEndDateDEI"]) if dei.get("CurrentFiscalYearEndDateDEI") else None,
             "period_type": dei.get("TypeOfCurrentPeriodDEI"),

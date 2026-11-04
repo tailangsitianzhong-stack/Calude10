@@ -65,9 +65,18 @@ def table_digest(path: Path) -> dict:
 
 
 DUMP = """
-import json, sys
+import json, os, sqlite3, sys
+from sqlalchemy import create_engine, select
+from sqlalchemy.pool import StaticPool
+import app.db as dbmod
+# 対象のDBを読み取り専用（mode=ro）で開いてアプリに渡す。DATABASE_URL は "sqlite://"（メモリ）にしてあるので、
+# アプリの既定のDBやフォルダ（data/・file: など）を作らない。書き込もうとすると SQLite がエラーにする。
+path = os.environ["ASI_VERIFY_DB"]
+ro = create_engine("sqlite://", poolclass=StaticPool,
+                   creator=lambda: sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False))
+dbmod.engine = ro
+dbmod.SessionLocal.configure(bind=ro)
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from app.db import SessionLocal
 from app.main import app
 from app.models import FinancialFact, Security
@@ -83,16 +92,26 @@ json.dump(out, open(sys.argv[1], "w"), ensure_ascii=False, sort_keys=True, defau
 
 def api_dump(db: Path, out: Path, workdir: Path) -> dict:
     backend = Path(__file__).resolve().parents[1]
-    env = {**os.environ, "PYTHONPATH": str(backend), "DATABASE_URL": f"sqlite:///file:{db.resolve()}?mode=ro&uri=true"}
+    env = {**os.environ, "PYTHONPATH": str(backend), "DATABASE_URL": "sqlite://", "ASI_VERIFY_DB": str(db.resolve())}
     script = workdir / "dump_api.py"
     script.write_text(DUMP)
     subprocess.run([sys.executable, str(script), str(out)], env=env, cwd=workdir, check=True)
     return json.loads(out.read_text())
 
 
-def verify(live: Path, backup_xz: Path, workdir: Path) -> int:
+def compare_api(pa: dict, pb: dict) -> dict:
+    """財務APIの応答（{銘柄: [状態コード, 本文]}）を比べる。エラー応答（200以外）は、両方で同じでも不合格にする。"""
+    return {"api_companies": {"live": len(pa), "restored": len(pb)},
+            "api_errors": sum(v[0] != 200 for v in pb.values()) + sum(v[0] != 200 for v in pa.values()),
+            "api_different": sorted(k for k in set(pa) | set(pb) if pa.get(k) != pb.get(k))[:20],
+            "api_identical": pa == pb}
+
+
+def verify(live: Path, backup_xz: Path, workdir: Path, dump=None) -> int:
+    """dump は財務APIの応答を取り出す関数（テストで差し替える）。既定は api_dump（別のプロセスで読み取り専用に実行）。"""
+    dump = dump or api_dump
     workdir.mkdir(parents=True, exist_ok=True)
-    result, ok = {}, True
+    result, ok = {}, False  # 途中で例外になった場合は合格にしない
     expect = dict(line.split("  ")[::-1] for line in Path(f"{backup_xz}.sha256").read_text().split("\n") if line)
     result["sha256_xz"] = sha256(backup_xz) == expect[backup_xz.name]
     restored = workdir / "restored.sqlite3"
@@ -104,10 +123,8 @@ def verify(live: Path, backup_xz: Path, workdir: Path) -> int:
         result["integrity_check"] = b["integrity_check"]
         result["tables"] = {t: v[0] for t, v in b.items() if t != "integrity_check"}
         result["tables_identical"] = a == b
-        pa, pb = api_dump(live, workdir / "api_live.json", workdir), api_dump(restored, workdir / "api_restored.json", workdir)
-        result["api_companies"] = {"live": len(pa), "restored": len(pb)}
-        result["api_errors"] = sum(v[0] != 200 for v in pb.values())
-        result["api_identical"] = pa == pb
+        pa, pb = dump(live, workdir / "api_live.json", workdir), dump(restored, workdir / "api_restored.json", workdir)
+        result.update(compare_api(pa, pb))
         ok = (result["sha256_xz"] and result["sha256_sqlite3"] and result["integrity_check"] == "ok"
               and result["tables_identical"] and result["api_identical"] and result["api_errors"] == 0)
     finally:

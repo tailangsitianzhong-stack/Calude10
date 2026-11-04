@@ -149,6 +149,36 @@ def mismatch_exceeded(compared: int, mismatched: int, rate: float) -> bool:
     return compared > MISMATCH_MIN_DOCS and mismatched / compared > rate
 
 
+def validate_stop_rate(rate) -> float:
+    """不一致率の停止基準は 0 より大きく 1 以下（NaN・0・負の値・1 超は拒否する）。"""
+    try:
+        r = float(rate)
+    except (TypeError, ValueError):
+        raise ValueError(f"不一致率の停止基準は 0 より大きく 1 以下の数で指定してください（指定値：{rate!r}）") from None
+    if not (0 < r <= 1):  # NaN もここで拒否される
+        raise ValueError(f"不一致率の停止基準は 0 より大きく 1 以下で指定してください（指定値：{rate!r}）")
+    return r
+
+
+# 実行ごとの要約を、品質の記録の表（JSON の列）に構造化して残す（DB の構造は変えない）。
+# 実行記録のメッセージは1,000文字で切れるため、認証エラー・停止の理由・再開の指定・件数はこちらで集計する。
+# dataset=edinet_run は画面・API の品質の表示の対象外（routers・datasets は参照しない）。
+RUN_SUMMARY = "edinet_run"
+
+
+def save_run_summary(session: Session, run: IngestionRun, summary: dict) -> None:
+    session.add(DataQualityCheck(dataset=RUN_SUMMARY, subject=str(run.id), check_type="run_summary",
+                                 severity="error" if summary.get("auth_error") or summary.get("mismatch_stop") else "info",
+                                 detail={"run_id": run.id, **summary}))
+
+
+def last_run_summary(session: Session) -> dict | None:
+    """直前の EDINET の取得の実行（API 接続の有無を問わない）の要約。なければ None。"""
+    d = session.scalar(select(DataQualityCheck.detail).where(DataQualityCheck.dataset == RUN_SUMMARY)
+                       .order_by(DataQualityCheck.id.desc()).limit(1))
+    return d
+
+
 DEFAULT_MAX_DOCS = 200  # 全銘柄を対象にするときの、1回（1バッチ）あたりの書類の取得数の上限（指定がない場合）
 
 
@@ -233,7 +263,8 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
 
 def report(session: Session) -> dict:
     """保存済みの記録だけから、失敗・負債なし・不一致率を種類ごとに数える（読み取りのみ。何も書き込まない）。
-    error_type・reason_type がない以前の記録は、種類を推定せず「unknown」（負債なしは会計基準から判定）として数える。"""
+    error_type・reason_type がない以前の記録は、種類を推定せず「unknown」（負債なしは会計基準から判定）として数える。
+    認証エラー・停止・再開は、実行ごとの構造化した要約（dataset=edinet_run）から数える（メッセージの文字列は使わない）。"""
     from collections import Counter
     failed = Counter()
     for (detail,) in session.execute(select(EdinetDocument.detail).where(EdinetDocument.parse_status == "failed")):
@@ -245,25 +276,27 @@ def report(session: Session) -> dict:
         unavailable[d.get("reason_type") or unavailable_type(d.get("standard"))] += 1
     parsed = session.scalar(select(func.count()).select_from(EdinetDocument).where(EdinetDocument.parse_status == "parsed"))
     compared, mismatched = mismatch_totals(session)
-    runs = list(session.execute(select(IngestionRun.id, IngestionRun.status, IngestionRun.message)
-                                .where(IngestionRun.dataset == DATASET).order_by(IngestionRun.id)))
+    summaries = [d or {} for (d,) in session.execute(select(DataQualityCheck.detail).where(
+        DataQualityCheck.dataset == RUN_SUMMARY).order_by(DataQualityCheck.id))]
     return {
         "documents_parsed": parsed,
         "documents_failed": sum(failed.values()),
         "documents_failed_by_type": {k: failed.get(k, 0) for k in ("api", "parse", "store", "unknown")},
         "failure_rate": (round(sum(failed.values()) / (parsed + sum(failed.values())), 4)
                          if parsed + sum(failed.values()) else None),
-        "auth_error_runs": sum("'auth_error': True" in (m or "") for _, _, m in runs),
+        "runs_with_summary": len(summaries),
+        "auth_error_runs": sum(bool(s.get("auth_error")) for s in summaries),
         "liabilities_unavailable_by_type": {k: unavailable.get(k, 0) for k in ("no_liabilities_element", "us_gaap")},
         "documents_compared": compared, "documents_mismatch": mismatched,
         "mismatch_rate_cumulative": round(mismatched / compared, 4) if compared else None,
-        "mismatch_stopped_runs": [i for i, _, m in runs if (m or "").startswith("不一致率の停止基準")],
+        "mismatch_stopped_runs": [s.get("run_id") for s in summaries if s.get("mismatch_stop")],
+        "resumed_after_mismatch_stop_runs": [s.get("run_id") for s in summaries if s.get("resumed_after_mismatch_stop")],
     }
 
 
 def run(session: Session, codes: list[str] | None = None, start: date | None = None, end: date | None = None,
         recheck_only: bool = False, all_listed: bool = False, max_docs: int | None = None,
-        mismatch_stop_rate: float = MISMATCH_STOP_RATE) -> IngestionRun:
+        mismatch_stop_rate: float = MISMATCH_STOP_RATE, resume_after_mismatch_stop: bool = False) -> IngestionRun:
     """start〜end に提出された決算書類を取得する。
 
     - codes（4桁の証券コード）を指定するか、all_listed=True で日本の普通株すべて（上場中）を対象にする。
@@ -274,7 +307,11 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
     - recheck_only なら API に接続せず、保存済みの値から品質の記録を作り直す。
     - 不一致率（不一致のあった書類 ÷ 照合できた書類）をこの実行（バッチ）と全実行の累計で数え、照合できた書類が
       MISMATCH_MIN_DOCS 件を超えてどちらかが mismatch_stop_rate を超えたら、その場で止める（その日は「処理済み」にしない）。
-      開始時点で累計がすでに超えていれば、API に接続せずに止める。"""
+      開始時点で累計がすでに超えていれば、API に接続せずに止める。
+    - 直前の実行が不一致率で止まった（または止まったまま開始しなかった）ときは、resume_after_mismatch_stop=True
+      （--resume-after-mismatch-stop）の指定がない限り、API に接続せずに止める。指定の有無は実行の要約に残す。
+    - 認証エラー（401）で止まった実行は、読み取り済みの書類があっても failed とする。"""
+    mismatch_stop_rate = validate_stop_rate(mismatch_stop_rate)  # 不正な値は、何も記録・接続する前に拒否する
     st = get_settings()
     if recheck_only:
         stats = recheck(session)
@@ -297,12 +334,29 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
         session.commit()
         return run
     base_compared, base_mismatch = mismatch_totals(session)
-    if mismatch_exceeded(base_compared, base_mismatch, mismatch_stop_rate):
+    last_run = last_run_summary(session) or {}
+    prev_stop = last_run.get("mismatch_stop")
+
+    def blocked(reason: dict, text: str) -> IngestionRun:  # API に接続せずに止める（要約に理由と再開の指定の有無を残す）
         run.status, run.finished_at = "failed", datetime.now(timezone.utc)
-        run.message = (f"不一致率の停止基準を超えているため開始しない（累計 {base_mismatch}/{base_compared} 件、"
-                       f"{base_mismatch / base_compared:.1%} ＞ {mismatch_stop_rate:.0%}）。原因を確認してから再開する")
+        run.message = text[:1000]
+        save_run_summary(session, run, {
+            "status": "failed", "blocked_before_start": True, "mismatch_stop": reason, "auth_error": False,
+            "resume_after_mismatch_stop": resume_after_mismatch_stop, "resumed_after_mismatch_stop": False,
+            "previous_run_id": last_run.get("run_id"), "mismatch_stop_rate": mismatch_stop_rate,
+            "cumulative": {"compared": base_compared, "mismatch": base_mismatch}})
         session.commit()
         return run
+
+    if prev_stop and not resume_after_mismatch_stop:
+        return blocked({**prev_stop, "scope": "previous_run", "previous_scope": prev_stop.get("scope")},
+                       f"不一致率の停止基準により開始しない：直前の実行（ID {last_run.get('run_id')}）が不一致率で停止しています"
+                       f"（{prev_stop.get('text', '')}）。原因を確認し、再開する場合は --resume-after-mismatch-stop を指定する")
+    if mismatch_exceeded(base_compared, base_mismatch, mismatch_stop_rate):
+        return blocked({"scope": "cumulative_at_start", "compared": base_compared, "mismatch": base_mismatch,
+                        "rate": round(base_mismatch / base_compared, 4), "threshold": mismatch_stop_rate},
+                       f"不一致率の停止基準により開始しない：累計 {base_mismatch}/{base_compared} 件"
+                       f"（{base_mismatch / base_compared:.1%}）が {mismatch_stop_rate:.0%} を超えている。原因を確認してから再開する")
     q = select(Security).where(Security.market == "JP")
     q = q.where(Security.security_type == "common", Security.is_active.is_(True)) if all_listed else q.where(Security.code.in_(codes or []))
     targets = {_sec5(s.code): s for s in session.scalars(q)}
@@ -330,9 +384,11 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
             return True
         bc, bm = stats["documents_compared"], stats["documents_mismatch"]
         cc, cm = base_compared + bc, base_mismatch + bm
-        for name, c, m in (("バッチ", bc, bm), ("累計", cc, cm)):
+        for scope, name, c, m in (("batch", "バッチ", bc, bm), ("cumulative", "累計", cc, cm)):
             if mismatch_exceeded(c, m, mismatch_stop_rate):
-                stats["mismatch_stop"] = f"{name}の不一致率 {m}/{c} 件（{m / c:.1%}）が {mismatch_stop_rate:.0%} を超えた"
+                stats["mismatch_stop"] = {"scope": scope, "compared": c, "mismatch": m, "rate": round(m / c, 4),
+                                          "threshold": mismatch_stop_rate,
+                                          "text": f"{name}の不一致率 {m}/{c} 件（{m / c:.1%}）が {mismatch_stop_rate:.0%} を超えた"}
                 return True
         return False
 
@@ -410,9 +466,15 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
     run.rows, run.finished_at = stats["facts_added"], datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if stats["documents_parsed"] else "failed")
     head = []
+    if stats["auth_error"]:  # 認証エラーで止まった実行は、読み取り済みの書類があっても「失敗」
+        run.status = "failed"
+        head.append("認証エラー（401）で停止")
     if stats["mismatch_stop"]:  # 自動停止は「失敗」として示し、原因の確認を求める
         run.status = "failed"
-        head.append(f"不一致率の停止基準により自動停止：{stats['mismatch_stop']}。原因を確認してから再開する")
+        head.append(f"不一致率の停止基準により自動停止：{stats['mismatch_stop']['text']}。原因を確認し、"
+                    "再開する場合は --resume-after-mismatch-stop を指定する")
+    if resume_after_mismatch_stop and prev_stop:
+        head.append(f"直前の実行（ID {last_run.get('run_id')}）の不一致率による停止のあと、再開の指定により実行")
     bc, bm = stats["documents_compared"], stats["documents_mismatch"]
     cc, cm = base_compared + bc, base_mismatch + bm
     stats["mismatch_rate_batch"] = f"{bm}/{bc}" + (f"（{bm / bc:.1%}）" if bc else "")
@@ -425,5 +487,12 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
                 f"・米国基準で負債取得不可（失敗ではない）{stats['liabilities_unavailable_us_gaap']}"
                 f"・不一致率 バッチ {stats['mismatch_rate_batch']} 累計 {stats['mismatch_rate_cumulative']}")
     run.message = ("; ".join(head + [str(stats)] + errors[:5]))[:1000]
+    save_run_summary(session, run, {
+        "status": run.status, "blocked_before_start": False, "auth_error": stats["auth_error"],
+        "mismatch_stop": stats["mismatch_stop"], "resume_after_mismatch_stop": resume_after_mismatch_stop,
+        "resumed_after_mismatch_stop": bool(resume_after_mismatch_stop and prev_stop),
+        "previous_run_id": last_run.get("run_id"), "mismatch_stop_rate": mismatch_stop_rate,
+        "stats": {k: v for k, v in stats.items() if k != "mismatch_stop"},
+        "errors_total": len(errors), "errors": [e[:200] for e in errors[:50]]})  # メッセージで切れたエラーもここに残す
     session.commit()
     return run
