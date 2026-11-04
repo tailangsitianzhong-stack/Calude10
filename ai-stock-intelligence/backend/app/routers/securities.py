@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..config import get_settings
-from ..models import DailyPrice, DataQualityCheck, Security
+from ..models import DailyPrice, DataQualityCheck, IngestionRun, Security
 from ..providers import jquants
 from ..services.financials import snapshot
 from ..services.quality import staleness
@@ -61,10 +61,26 @@ def get_security(session: Session, market: str, code: str) -> Security:
 PRICE_PROVIDER_LABEL = {"jquants": "J-Quants API V2", "tiingo": "Tiingo", "massive": "Massive（旧Polygon.io）"}
 
 
+# 株価の取得元の障害時に表示する説明（日本株は J-Quants 以外に使える取得元がない）
+OUTAGE_NOTE = {"JP": "株価の取得元（J-Quants）の障害で最新の取得に失敗しました。日本株の株価に代わりの取得元はありません",
+               "US": "株価の取得元の障害で最新の取得に失敗しました（代わりの取得元でも取得できませんでした）"}
+
+
+def last_price_run_failed(session: Session, market: str) -> bool:
+    run = session.scalar(select(IngestionRun).where(IngestionRun.dataset == ("prices_jp" if market == "JP" else "prices_us"),
+                                                    IngestionRun.status != "running")
+                         .order_by(IngestionRun.id.desc()).limit(1))
+    return bool(run and run.status == "failed")
+
+
 def latest_quote(session: Session, s: Security) -> Quote:
     p = session.scalar(select(DailyPrice).where(DailyPrice.security_id == s.id).order_by(DailyPrice.trade_date.desc()).limit(1))
     cur = CURRENCY.get(s.market, "")
+    failed = last_price_run_failed(session, s.market)
     if p is None:
+        if failed:  # 設定はあるが取得元の障害で取得できていない。値は作らない
+            return Quote(price=None, currency=cur, as_of=None, provider=None, is_delayed=None, data_status="error",
+                         note=OUTAGE_NOTE[s.market])
         why = "J-Quants API キー未設定のため未接続" if s.market == "JP" else "米国株の株価API（Tiingo / Massive）が未設定のため未接続"
         return Quote(price=None, currency=cur, as_of=None, provider=None, is_delayed=None, data_status="not_connected", note=why)
     stale, age = staleness(p.trade_date, "daily")
@@ -72,6 +88,9 @@ def latest_quote(session: Session, s: Security) -> Quote:
         note = jquants.DELAY_NOTE.get(get_settings().jquants_plan, "") + "。リアルタイムの株価ではありません"
     else:
         note = "日足の終値。リアルタイムの株価ではありません"
+    if failed:  # 保存済みの終値は基準日つきで示し、取得元の障害であることを明示する（「最新」とは表示しない）
+        note = f"{OUTAGE_NOTE[s.market]}。表示は {p.trade_date} の保存済みの終値です。{note}"
+        stale = True
     return Quote(price=p.close, currency=cur, as_of=p.trade_date, fetched_at=p.fetched_at,
                  provider=PRICE_PROVIDER_LABEL.get(p.provider, p.provider), is_delayed=True,
                  data_status="stale" if stale else "ok", note=note)

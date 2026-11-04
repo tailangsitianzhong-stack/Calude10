@@ -39,6 +39,8 @@ class Settings(BaseSettings):
 
     # 米国株の株価：tiingo / massive（旧 Polygon.io。polygon と書いても同じ）
     us_price_provider: str = ""
+    # 主の取得元が使えないときの代替（tiingo / massive）。空なら、キーのあるもう一方を使う
+    us_price_fallback: str = ""
     tiingo_api_key: str = ""
     # Massive（旧 Polygon.io）のキー：MASSIVE_API_KEY を優先し、空なら旧名 POLYGON_API_KEY を使う
     # （空の MASSIVE_API_KEY= が .env にあっても POLYGON_API_KEY が無視されないよう、別々に読んでから選ぶ）
@@ -80,7 +82,7 @@ class Settings(BaseSettings):
         # .env の「DATABASE_URL=」（空）は未指定として扱い、SQLite を使う
         return (v or "").strip() or "sqlite:///./data/asi.sqlite3"
 
-    @field_validator("jquants_plan", "us_price_provider", mode="before")
+    @field_validator("jquants_plan", "us_price_provider", "us_price_fallback", mode="before")
     @classmethod
     def _lower(cls, v):
         return (v or "").strip().lower()
@@ -97,7 +99,7 @@ class Settings(BaseSettings):
             raise ValueError(f"JQUANTS_PLAN は {', '.join(JQUANTS_PLANS)} のいずれか（指定値：{v}）")
         return v
 
-    @field_validator("us_price_provider")
+    @field_validator("us_price_provider", "us_price_fallback")
     @classmethod
     def _provider(cls, v):
         if v not in US_PRICE_PROVIDERS:

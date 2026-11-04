@@ -53,15 +53,17 @@ def dataset_status(session: Session) -> list[dict]:
         # SEC は設定がなくなっても、過去に取得した財務データは表示する（更新が止まっている旨を警告する）
         if not configured and (key != "sec_financials" or not rows):
             status = "not_connected"
+        elif run and run.status == "failed" and not rows:
+            status = "error"  # 設定はあるが、取得元の障害などで1件も取得できていない（「未接続」とは区別する）
         elif ok_run is None and not rows:
             status = "not_connected"
-        elif run and run.status == "failed" and not rows:
-            status = "error"
         else:
             status = "ok"
             # 取得自体は成功していても、最新データが古ければ「古いデータ」と表示する（例：Freeプランの12週間遅延）
             if key in ("prices_jp", "prices_us") and latest_data and (date.today() - latest_data).days > 7:
                 status = "stale"
+            if key in ("prices_jp", "prices_us") and run and run.status == "failed":
+                status = "error"  # 保存済みの値はあるが、最新の取得は取得元の障害で失敗している
         issues = session.scalar(select(func.count()).select_from(DataQualityCheck).where(
             DataQualityCheck.dataset == key.split("_")[0] if key in ("fred", "sec_financials") else DataQualityCheck.dataset == key)) or 0
         warnings = []
@@ -69,6 +71,9 @@ def dataset_status(session: Session) -> list[dict]:
             warnings.append("SEC_USER_AGENT（アプリ名と連絡先メールアドレス）が未設定のため、SECの財務データを更新していません")
         if key == "prices_jp" and st.jquants_refresh_token and not st.has_credential("jquants"):
             warnings.append("JQUANTS_REFRESH_TOKEN（V1）は V2 では使えません。ダッシュボードで発行した APIキーを JQUANTS_API_KEY に設定してください")
+        if key in ("prices_jp", "prices_us") and run and run.status == "failed":
+            warnings.append("株価の最新の取得に失敗しました（取得元の障害）。" +
+                            ("日本株の株価に代わりの取得元はありません" if key == "prices_jp" else "代わりの取得元でも取得できませんでした"))
         if key == "fred" and run and run.message and "FRED_API_KEY" in run.message:
             warnings.append("FRED_API_KEY が受け付けられなかったため、公開CSVで取得しています")
         if key == "prices_jp" and st.has_credential("jquants") and st.jquants_plan == "free":
