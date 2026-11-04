@@ -1,0 +1,11 @@
+.env
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.venv/
+backend/data/
+frontend/e2e/screenshots/
+*.sqlite3
+.extra-ca.pem
+*.tsbuildinfo

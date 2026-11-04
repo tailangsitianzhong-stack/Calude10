@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== デザイントークン =====
+   既定はダーク。data-theme="light" でライトに切り替える。
+   上昇＝青緑、下落＝赤系（色だけに頼らず ▲▼ も併記する） */
+:root {
+  --font-sans: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --bg: 9 12 18;
+  --surface: 16 21 30;
+  --raised: 23 30 42;
+  --line: 38 47 63;
+  --ink: 232 237 245;
+  --muted: 152 164 184;
+  --faint: 98 110 130;
+  --accent: 122 162 255;
+  --up: 45 212 170;
+  --down: 255 107 120;
+  --warn: 245 190 90;
+  --info: 120 180 255;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: 245 247 251;
+  --surface: 255 255 255;
+  --raised: 240 243 248;
+  --line: 218 224 234;
+  --ink: 17 24 39;
+  --muted: 75 85 105;
+  --faint: 120 130 148;
+  --accent: 52 92 214;
+  --up: 4 140 110;
+  --down: 210 50 70;
+  --warn: 170 110 0;
+  --info: 30 110 210;
+  color-scheme: light;
+}
+
+html, body { background: rgb(var(--bg)); color: rgb(var(--ink)); }
+body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.grid-bg {
+  background-image:
+    radial-gradient(1200px 400px at 10% -10%, rgb(var(--accent) / 0.10), transparent 60%),
+    radial-gradient(900px 300px at 100% 0%, rgb(var(--up) / 0.06), transparent 60%);
+}
+:focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; border-radius: 6px; }
