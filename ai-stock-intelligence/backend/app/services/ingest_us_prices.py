@@ -32,7 +32,9 @@ def run(session: Session) -> IngestionRun:
         secs = list(session.scalars(select(Security).where(Security.id.in_(ids)).order_by(Security.code)))
         last = dict(session.execute(select(DailyPrice.security_id, func.max(DailyPrice.trade_date))
                                     .where(DailyPrice.provider == "tiingo").group_by(DailyPrice.security_id)).all())
-        secs.sort(key=lambda s: last.get(s.id) or date.min)
+        # 未取得の銘柄を優先し、その中では SEC_EXTRA_TICKERS（分析対象として指定した銘柄）を先に取る
+        extra = [t.strip().upper() for t in st.sec_extra_tickers.split(",") if t.strip()]
+        secs.sort(key=lambda s: (last.get(s.id) or date.min, extra.index(s.code) if s.code in extra else len(extra), s.code))
         try:
             for s in secs[:40]:
                 try:

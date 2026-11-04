@@ -73,13 +73,16 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/dashboard-${label}.png`, fullPage: true });
   });
 
-  await test(`[${label}] 米国株の詳細：SECの財務データ（提出日つき）を表示し、株価は未接続`, async () => {
+  await test(`[${label}] 米国株の詳細：SECの財務データ（提出日つき）と、株価の取得元・基準日`, async () => {
     await page.goto(BASE + "/stocks/US/KO");
     const t = await page.getByTestId("financials-table").innerText();
     assert(/直近4四半期/.test(t) && /提出日/.test(t) && /億ドル/.test(t), `財務の表の内容が想定と違う：${t.slice(0, 120)}`);
     assert(/SEC EDGAR/.test(await page.locator("#financials").innerText()), "財務データの出所が表示されていない");
     const quote = await page.getByTestId("quote").innerText();
-    assert(/未接続/.test(quote), "米国株の株価が未接続と表示されていない");
+    if (!/未接続/.test(quote)) {
+      assert(/Tiingo|Massive/.test(quote) && /\d{4}\/\d{2}\/\d{2}/.test(quote) && /リアルタイムの株価ではありません/.test(quote),
+        `米国株の株価の取得元・基準日・遅延の表示がない：${quote}`);
+    }
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-us-${label}.png`, fullPage: true });
   });
