@@ -21,9 +21,9 @@ STOCK = {"assets", "liabilities", "equity", "cash", "goodwill", "debt_noncurrent
          "inventory", "shares_outstanding",
          "net_assets", "equity_ratio", "bps", "shares_issued", "treasury_shares"}
 # 年次報告とみなす書類（米国：10-K・20-F・40-F、日本：通期の決算短信）
-ANNUAL_FORMS = ("10-K", "20-F", "40-F", "TANSHIN-FY")
+ANNUAL_FORMS = ("10-K", "20-F", "40-F", "TANSHIN-FY", "EDINET-ASR")
 JP_INTERIM_FORMS = ("TANSHIN-Q",)
-JP_TAG_PREFIX = "jquants:"
+JP_TAG_PREFIX = ("jquants:", "edinet:")  # 日本企業の値（J-Quants の決算短信、EDINET の有価証券報告書など）
 TAG_RANK = {c: {tag: i for i, (_, tag) in enumerate(tags)} for c, tags in CONCEPTS.items()}
 # 売上の候補のうち、他の売上タグがない期間だけ使うもの（税を含む売上は、税抜きの売上より大きくなるため）
 REVENUE_FALLBACK_TAGS = {"RevenueFromContractWithCustomerIncludingAssessedTax"}

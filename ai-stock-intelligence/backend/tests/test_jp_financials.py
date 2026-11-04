@@ -181,3 +181,16 @@ def test_ttm_not_computed_across_accounting_standard_change(client):
     ])
     r = client.get("/api/v1/securities/JP/5555/financials").json()
     assert r["ttm"] is None and r["annual"][-1]["accounting_standard"] == "JGAAP"
+
+
+def test_jquants_fins_not_scheduled_unless_enabled(monkeypatch):
+    """定期実行の worker は、利用者が JQUANTS_FINS_SCHEDULE=true にするまで日本企業の財務情報を取得しない。"""
+    from app import config
+    from app.worker import schedule_intervals
+    monkeypatch.delenv("JQUANTS_FINS_SCHEDULE", raising=False)
+    config.get_settings.cache_clear()
+    assert "jquants_fins" not in schedule_intervals() and "edinet" not in schedule_intervals()
+    monkeypatch.setenv("JQUANTS_FINS_SCHEDULE", "true")
+    config.get_settings.cache_clear()
+    assert schedule_intervals()["jquants_fins"] == 24 * 3600
+    config.get_settings.cache_clear()

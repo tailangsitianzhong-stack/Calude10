@@ -191,3 +191,23 @@ class FetchLog(Base):
     status: Mapped[str] = mapped_column(String(16))  # success / failed
     rows: Mapped[int] = mapped_column(Integer, default=0)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EdinetDocument(Base):
+    """EDINET の決算書類（有価証券報告書・半期報告書など）1件。書類一覧のメタデータと読み取りの状態。追記のみ。"""
+
+    __tablename__ = "edinet_documents"
+
+    doc_id: Mapped[str] = mapped_column(String(16), primary_key=True)  # 書類管理番号
+    security_id: Mapped[int | None] = mapped_column(ForeignKey("securities.id"), index=True)
+    sec_code: Mapped[str] = mapped_column(String(8), index=True)  # 5桁の証券コード
+    edinet_code: Mapped[str | None] = mapped_column(String(8))
+    filer_name: Mapped[str | None] = mapped_column(String(256))
+    form_code: Mapped[str] = mapped_column(String(8))  # 030000 有報、043A00 半期報告書 など
+    doc_description: Mapped[str | None] = mapped_column(String(256))
+    submitted_at: Mapped[str] = mapped_column(String(20))  # 提出日時（JST、"YYYY-MM-DD hh:mm"）
+    period_end: Mapped[date | None] = mapped_column(Date)  # CSV の DEI（CurrentPeriodEndDateDEI）
+    accounting_standard: Mapped[str | None] = mapped_column(String(16))
+    parse_status: Mapped[str] = mapped_column(String(16))  # parsed / failed
+    detail: Mapped[dict] = mapped_column(JSON)  # 書類一覧のメタデータ・取り出した値の要素ID・問題
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
