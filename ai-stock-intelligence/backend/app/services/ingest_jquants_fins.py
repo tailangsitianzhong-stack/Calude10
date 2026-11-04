@@ -17,6 +17,7 @@ from ..config import get_settings
 from ..models import DataQualityCheck, FetchLog, FinancialFact, IngestionRun, JpDisclosure, Security
 from ..providers import jquants
 from ..providers.http import redact
+from .quality import add_once, forget_pending
 
 DATASET = "financials_jp"
 QUALITY = "jquants_fins"
@@ -107,15 +108,15 @@ def window_dates(today: date, plan: str, fetched: set[str], max_dates: int) -> l
 
 
 def _record_quality(session: Session, stats: dict) -> None:
+    """品質の記録。同じ開示（・項目）について同じ記録を2回以上追加しない（同じ開示日を取り直しても増えない）。"""
     for u in stats["unmatched"]:
-        session.add(DataQualityCheck(dataset=QUALITY, subject=u["code"], check_type="unmatched", severity="info",
-                                     detail={"reason": "銘柄一覧に対応するコードがない（上場廃止・優先株など）。開示の元データだけ保存", **u}))
+        add_once(session, QUALITY, u["code"], "unmatched", {"disc_no": u["disc_no"]}, "info",
+                 {"reason": "銘柄一覧に対応するコードがない（上場廃止・優先株など）。開示の元データだけ保存", **u})
     for u in stats["unknown_doc"]:
-        session.add(DataQualityCheck(dataset=QUALITY, subject=u["disc_no"], check_type="unknown_doc_type", severity="warn",
-                                     detail={"reason": "公式の開示書類種別の一覧にない種別。値は保存しない", **u}))
+        add_once(session, QUALITY, u["disc_no"], "unknown_doc_type", {"disc_no": u["disc_no"]}, "warn",
+                 {"reason": "公式の開示書類種別の一覧にない種別。値は保存しない", **u})
     for pr in stats["problems"]:
-        session.add(DataQualityCheck(dataset=QUALITY, subject=pr["code"], check_type="invalid_value", severity="warn",
-                                     detail=pr))
+        add_once(session, QUALITY, pr["code"], "invalid_value", {"disc_no": pr["disc_no"], "field": pr["field"]}, "warn", pr)
 
 
 def run(session: Session, codes: list[str] | None = None, dates: list[date] | None = None,
@@ -175,6 +176,7 @@ def run(session: Session, codes: list[str] | None = None, dates: list[date] | No
             session.commit()
         except Exception as e:  # 保存の失敗も、その日付だけの失敗として記録し、他の日付は続ける
             session.rollback()
+            forget_pending(session)
             errors.append(f"{label}: 保存に失敗 {redact(str(e))[:150]}")
             return
         totals["requests_ok"] += 1
