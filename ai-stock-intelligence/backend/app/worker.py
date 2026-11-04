@@ -97,6 +97,8 @@ def main() -> None:
         else:
             if not (a.start and a.end) or not (a.codes or a.all_listed) or (a.codes and a.all_listed):
                 ap.error("edinet には --start・--end と、--codes か --all-listed のどちらか一方が必要です")
+            if a.max_docs is not None and a.max_docs < 1:
+                ap.error("--max-docs は1以上を指定してください")
             job("edinet", codes=[c.strip() for c in a.codes.split(",") if c.strip()] if a.codes else None,
                 start=_d.fromisoformat(a.start), end=_d.fromisoformat(a.end), all_listed=a.all_listed, max_docs=a.max_docs)
     elif a.task == "jquants_fins" and a.dedupe_quality:

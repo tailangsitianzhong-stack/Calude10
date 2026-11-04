@@ -155,15 +155,28 @@ def _process_document(session: Session, client, meta: dict, sec: Security, stats
         stats["checks"] += len(checks)
         stats["check_mismatch"] += sum(not c["match"] for c in checks)
         return "parsed"
+    except edinet.EdinetAuthError:
+        # 認証の失敗は書類の問題ではない：書類を「失敗」と記録せず、実行全体を止める（呼び出し元で処理）
+        session.rollback()
+        forget_pending(session)
+        raise
     except Exception as e:  # 1件の書類の失敗で他を止めない。失敗も記録して原因を追えるようにする
         session.rollback()
         forget_pending(session)
         errors.append(f"{meta['docID']}: {redact(str(e))[:150]}")
-        session.add(EdinetDocument(
-            doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),
-            filer_name=meta.get("filerName"), form_code=meta["formCode"], doc_description=meta.get("docDescription"),
-            submitted_at=meta["submitDateTime"], period_end=None, accounting_standard=None, parse_status="failed",
-            detail={"meta": keep, "error": redact(str(e))[:300]}, fetched_at=now))
+        # ロールバックで、前回の「失敗」の記録（再試行の前に消したもの）が戻る。戻った場合は内容を更新する
+        # （以前は同じ書類番号で新しい行を追加しようとして一意制約に反し、実行全体が止まっていた）
+        failed = session.get(EdinetDocument, meta["docID"])
+        if failed is None:
+            session.add(EdinetDocument(
+                doc_id=meta["docID"], security_id=sec.id, sec_code=meta["secCode"], edinet_code=meta.get("edinetCode"),
+                filer_name=meta.get("filerName"), form_code=meta["formCode"], doc_description=meta.get("docDescription"),
+                submitted_at=meta["submitDateTime"], period_end=None, accounting_standard=None, parse_status="failed",
+                detail={"meta": keep, "error": redact(str(e))[:300]}, fetched_at=now))
+        else:
+            failed.parse_status, failed.fetched_at = "failed", now
+            failed.detail = {**(failed.detail or {}), "meta": keep, "error": redact(str(e))[:300],
+                             "attempts": int((failed.detail or {}).get("attempts", 1)) + 1}
         session.commit()
         stats["documents_failed"] += 1
         return "failed"
@@ -189,6 +202,8 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
         return r
     if all_listed and max_docs is None:
         max_docs = DEFAULT_MAX_DOCS
+    if max_docs is not None and max_docs < 1:
+        raise ValueError("max_docs は1以上を指定してください")
     scope = "日本の普通株すべて" if all_listed else f"{len(codes or [])}社"
     run = IngestionRun(dataset=DATASET, source=f"EDINET API v2（書類一覧・CSV、{scope}、上限 {max_docs or 'なし'} 件）",
                        status="running")
@@ -207,63 +222,70 @@ def run(session: Session, codes: list[str] | None = None, start: date | None = N
              "facts_added": 0, "facts_existing": 0, "checks": 0, "check_mismatch": 0, "limit_reached": False}
     errors: list[str] = []
     downloads = 0
+    attempted: set[str] = set()  # この実行で処理を試みた書類（失敗した書類を同じ実行で2回試さない）
 
     def room() -> bool:
         return max_docs is None or downloads < max_docs
 
     try:
-        # 1) 前回失敗した書類を、保存しておいたメタデータから再試行する（書類一覧は取り直さない）
-        failed = list(session.scalars(select(EdinetDocument).where(EdinetDocument.parse_status == "failed",
-                                                                    EdinetDocument.sec_code.in_(list(targets)))
-                                      .order_by(EdinetDocument.submitted_at)))
-        for doc in failed:
-            if not room():
-                stats["limit_reached"] = True
-                break
-            meta = {**(doc.detail or {}).get("meta", {}), "docID": doc.doc_id, "secCode": doc.sec_code,
-                    "formCode": doc.form_code, "submitDateTime": doc.submitted_at}
-            _process_document(session, client, meta, targets[doc.sec_code], stats, errors)
-            stats["documents_retried"] += 1
-            downloads += 1
-        # 2) 提出日ごとに書類一覧を取得し、対象の決算書類を読み取る
-        listed = {k for (k,) in session.execute(select(FetchLog.key).where(FetchLog.dataset == LIST_DATASET))} if all_listed else set()
-        d = start
-        while d <= end and not stats["limit_reached"]:
-            if d.weekday() < 5:
-                if d.isoformat() in listed:
-                    stats["dates_skipped_listed"] += 1
-                    d += timedelta(days=1)
-                    continue
-                try:
-                    docs = edinet.periodic_documents(client.documents(d), set(targets))
-                    stats["list_requests"] += 1
-                except edinet.EdinetAuthError as e:
-                    errors.append(str(e))
+        try:
+            # 1) 前回失敗した書類を、保存しておいたメタデータから再試行する（書類一覧は取り直さない）
+            failed = list(session.scalars(select(EdinetDocument).where(EdinetDocument.parse_status == "failed",
+                                                                        EdinetDocument.sec_code.in_(list(targets)))
+                                          .order_by(EdinetDocument.submitted_at)))
+            for doc in failed:
+                if not room():
+                    stats["limit_reached"] = True
                     break
-                except Exception as e:  # この日は記録しないので、次の実行で取り直す
-                    errors.append(f"{d}: {redact(str(e))[:150]}")
-                    d += timedelta(days=1)
-                    continue
-                complete = True
-                for meta in docs:
-                    stats["documents_found"] += 1
-                    prev = session.get(EdinetDocument, meta["docID"])
-                    if prev and prev.parse_status == "parsed":
-                        stats["documents_skipped_existing"] += 1
+                meta = {**(doc.detail or {}).get("meta", {}), "docID": doc.doc_id, "secCode": doc.sec_code,
+                        "formCode": doc.form_code, "submitDateTime": doc.submitted_at}
+                _process_document(session, client, meta, targets[doc.sec_code], stats, errors)
+                attempted.add(doc.doc_id)
+                stats["documents_retried"] += 1
+                downloads += 1
+            # 2) 提出日ごとに書類一覧を取得し、対象の決算書類を読み取る
+            listed = {k for (k,) in session.execute(select(FetchLog.key).where(FetchLog.dataset == LIST_DATASET))} if all_listed else set()
+            d = start
+            while d <= end and not stats["limit_reached"]:
+                if d.weekday() < 5:
+                    if d.isoformat() in listed:
+                        stats["dates_skipped_listed"] += 1
+                        d += timedelta(days=1)
                         continue
-                    if not room():  # 上限：この日の残りは次の実行で（この日は「処理済み」にしない）
-                        stats["limit_reached"] = True
-                        complete = False
+                    try:
+                        docs = edinet.periodic_documents(client.documents(d), set(targets))
+                        stats["list_requests"] += 1
+                    except edinet.EdinetAuthError as e:
+                        errors.append(str(e))
                         break
-                    _process_document(session, client, meta, targets[meta["secCode"]], stats, errors)
-                    downloads += 1  # 失敗した書類も記録済みで、次の実行の 1) で再試行される
-                if complete and all_listed:
-                    log = session.scalar(select(FetchLog).where(FetchLog.dataset == LIST_DATASET, FetchLog.key == d.isoformat()))
-                    if log is None:
-                        session.add(FetchLog(dataset=LIST_DATASET, key=d.isoformat(), status="success", rows=len(docs),
-                                             fetched_at=datetime.now(timezone.utc)))
-                    session.commit()
-            d += timedelta(days=1)
+                    except Exception as e:  # この日は記録しないので、次の実行で取り直す
+                        errors.append(f"{d}: {redact(str(e))[:150]}")
+                        d += timedelta(days=1)
+                        continue
+                    complete = True
+                    for meta in docs:
+                        stats["documents_found"] += 1
+                        prev = session.get(EdinetDocument, meta["docID"])
+                        if (prev and prev.parse_status == "parsed") or meta["docID"] in attempted:
+                            stats["documents_skipped_existing"] += 1  # 読み取り済み、またはこの実行で再試行済み（失敗は記録済み）
+                            continue
+                        if not room():  # 上限：この日の残りは次の実行で（この日は「処理済み」にしない）
+                            stats["limit_reached"] = True
+                            complete = False
+                            break
+                        _process_document(session, client, meta, targets[meta["secCode"]], stats, errors)
+                        attempted.add(meta["docID"])
+                        downloads += 1  # 失敗した書類も記録済みで、次の実行の 1) で再試行される
+                    if complete and all_listed:
+                        log = session.scalar(select(FetchLog).where(FetchLog.dataset == LIST_DATASET, FetchLog.key == d.isoformat()))
+                        if log is None:
+                            session.add(FetchLog(dataset=LIST_DATASET, key=d.isoformat(), status="success", rows=len(docs),
+                                                 fetched_at=datetime.now(timezone.utc)))
+                        session.commit()
+                d += timedelta(days=1)
+        except edinet.EdinetAuthError as e:  # 書類の取得中の認証の失敗：日付も書類も「処理済み」「失敗」にしない
+            errors.append(str(e))
+            stats["auth_error"] = True
     finally:
         client.close()
     run = session.get(IngestionRun, run.id)
