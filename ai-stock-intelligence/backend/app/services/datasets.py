@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import DailyPrice, DataQualityCheck, FinancialFact, IndexBar, IngestionRun, MacroObservation
+from ..models import DailyPrice, DataQualityCheck, FinancialFact, IndexBar, IngestionRun, JpDisclosure, MacroObservation, Security
 from ..providers import jquants
 
 DATASETS = {
@@ -13,6 +13,8 @@ DATASETS = {
              "reliability": "公的統計・公式データ（FRED経由）", "delay": "日次系列は前営業日まで（翌営業日に更新）。経済指標は公表日に更新、後日改定あり"},
     "sec_financials": {"name": "米国企業の財務データ", "provider": "SEC EDGAR（XBRL）",
                        "reliability": "一次情報（企業がSECに提出した書類）", "delay": "提出から数分〜1営業日でAPIに反映"},
+    "financials_jp": {"name": "日本企業の財務データ", "provider": "J-Quants API V2（財務情報 /v2/fins/summary）",
+                      "reliability": "公式データ（日本取引所グループ。上場会社が提出したXBRLに基づく）", "delay": None},
     "prices_jp": {"name": "日本株の株価・TOPIX", "provider": "J-Quants API V2",
                   "reliability": "公式データ（日本取引所グループ）", "delay": None},
     "prices_us": {"name": "米国株の株価", "provider": "Tiingo / Massive（選択制）",
@@ -36,8 +38,15 @@ def dataset_status(session: Session) -> list[dict]:
             latest_data = session.scalar(select(func.max(MacroObservation.obs_date)))
             rows = session.scalar(select(func.count()).select_from(MacroObservation)) or 0
         elif key == "sec_financials":
-            latest_data = session.scalar(select(func.max(FinancialFact.filed)))
-            rows = session.scalar(select(func.count(func.distinct(FinancialFact.security_id)))) or 0
+            # 米国企業だけを数える（日本企業の財務データも financial_facts に入るため）
+            us_ids = select(Security.id).where(Security.market == "US")
+            latest_data = session.scalar(select(func.max(FinancialFact.filed)).where(FinancialFact.security_id.in_(us_ids)))
+            rows = session.scalar(select(func.count(func.distinct(FinancialFact.security_id)))
+                                  .where(FinancialFact.security_id.in_(us_ids))) or 0
+        elif key == "financials_jp":
+            latest_data = session.scalar(select(func.max(JpDisclosure.disc_date)))
+            rows = session.scalar(select(func.count(func.distinct(JpDisclosure.security_id)))
+                                  .where(JpDisclosure.security_id.is_not(None))) or 0
         elif key in ("prices_jp", "prices_us"):
             prov = ("jquants",) if key == "prices_jp" else ("tiingo", "massive")
             latest_data = session.scalar(select(func.max(DailyPrice.trade_date)).where(DailyPrice.provider.in_(prov)))
@@ -45,9 +54,9 @@ def dataset_status(session: Session) -> list[dict]:
         elif ok_run:
             latest_data, rows = ok_run.source_as_of, ok_run.rows
         delay = meta["delay"]
-        if key == "prices_jp":
+        if key in ("prices_jp", "financials_jp"):
             delay = jquants.DELAY_NOTE.get(st.jquants_plan, "") if st.has_credential("jquants") else "未接続"
-        configured = {"prices_jp": st.has_credential("jquants"),
+        configured = {"prices_jp": st.has_credential("jquants"), "financials_jp": st.has_credential("jquants"),
                       "prices_us": bool(st.us_price_provider and st.has_credential(st.us_price_provider)),
                       "sec_financials": st.sec_ua_configured}.get(key, True)
         # SEC は設定がなくなっても、過去に取得した財務データは表示する（更新が止まっている旨を警告する）
@@ -62,8 +71,8 @@ def dataset_status(session: Session) -> list[dict]:
             # 取得自体は成功していても、最新データが古ければ「古いデータ」と表示する（例：Freeプランの12週間遅延）
             if key in ("prices_jp", "prices_us") and latest_data and (date.today() - latest_data).days > 7:
                 status = "stale"
-        issues = session.scalar(select(func.count()).select_from(DataQualityCheck).where(
-            DataQualityCheck.dataset == key.split("_")[0] if key in ("fred", "sec_financials") else DataQualityCheck.dataset == key)) or 0
+        qkey = {"fred": "fred", "sec_financials": "sec", "financials_jp": "jquants_fins"}.get(key, key)
+        issues = session.scalar(select(func.count()).select_from(DataQualityCheck).where(DataQualityCheck.dataset == qkey)) or 0
         warnings = []
         if key == "sec_financials" and not st.sec_ua_configured:
             warnings.append("SEC_USER_AGENT（アプリ名と連絡先メールアドレス）が未設定のため、SECの財務データを更新していません")
@@ -71,6 +80,10 @@ def dataset_status(session: Session) -> list[dict]:
             warnings.append("JQUANTS_REFRESH_TOKEN（V1）は V2 では使えません。ダッシュボードで発行した APIキーを JQUANTS_API_KEY に設定してください")
         if key == "fred" and run and run.message and "FRED_API_KEY" in run.message:
             warnings.append("FRED_API_KEY が受け付けられなかったため、公開CSVで取得しています")
+        if key == "financials_jp" and st.has_credential("jquants") and st.jquants_plan == "free":
+            warnings.append("Freeプランのため、決算短信の財務情報は開示から約12週間後のものまでしか取得できません")
+        if key == "financials_jp" and rows:
+            warnings.append("負債の合計は決算短信のサマリーに項目がないため未取得（EDINET での補完を検討中）")
         if key == "prices_jp" and st.has_credential("jquants") and st.jquants_plan == "free":
             warnings.append("Freeプランのため株価は約12週間遅れています。現在の株価ではありません")
         out.append({"dataset": key, **meta, "delay": delay, "status": status, "configured": configured,

@@ -8,7 +8,7 @@ import time
 import httpx
 
 # URL に含まれる秘密情報（APIキー）を、ログ・エラーメッセージ・画面に出さないために伏せる
-_SECRET_PARAMS = re.compile(r"((?:api_?key|apikey|token|access_token)=)[^&\s\"']+", re.IGNORECASE)
+_SECRET_PARAMS = re.compile(r"((?:api_?key|apikey|token|access_token|subscription-key)=)[^&\s\"']+", re.IGNORECASE)
 
 
 def redact(text: str) -> str:

@@ -96,6 +96,20 @@ LABELS = {"revenue": "売上高", "gross_profit": "売上総利益", "operating_
           "eps_diluted": "希薄化EPS", "cfo": "営業キャッシュフロー", "capex": "設備投資", "dividends_paid": "配当支払",
           "buybacks": "自社株買い", "assets": "総資産", "liabilities": "負債", "equity": "株主資本", "cash": "現金",
           "debt_noncurrent": "長期借入金", "debt_current": "短期の借入金", "shares_outstanding": "発行済株式数"}
+# 日本企業（J-Quants の決算短信）の項目。米国企業の応答は変えない（日本株のときだけ加える）
+JP_LABELS = {"ordinary_income": "経常利益", "net_income": "純利益（親会社株主に帰属）", "eps_basic": "EPS",
+             "eps_diluted": "希薄化EPS", "net_assets": "純資産（非支配株主持分を含む）", "equity_ratio": "自己資本比率",
+             "bps": "1株あたり純資産", "cfi": "投資キャッシュフロー", "cff": "財務キャッシュフロー",
+             "shares_issued": "期末発行済株式数（自己株式を含む）", "treasury_shares": "期末自己株式数",
+             "dividend_per_share": "1株あたり配当（年間）"}
+JP_SOURCE = "J-Quants API V2 財務情報（決算短信のサマリー。上場会社が提出したXBRLに基づく）"
+JP_ITEM_NOTES = [
+    "純資産は J-Quants の「純資産（Eq）」で、非支配株主持分などを含みます（米国企業の「株主資本」とは別の項目）。",
+    "経常利益は日本基準の項目です。IFRS・米国基準の企業には概念がないため「—」になります。",
+    "負債の合計は、決算短信のサマリーに項目がないため、EDINET の有価証券報告書・半期報告書に報告された値を表示します。"
+    "第1・第3四半期や、EDINET から未取得の期は「—」です（推測で計算しません）。",
+    "金額は円単位で収録された値で、損益・キャッシュフローは期首からの累計です。",
+]
 
 
 @router.get("/{market}/{code}/financials")
@@ -103,13 +117,24 @@ def financials(market: str, code: str, as_of: date | None = Query(None, descript
                session: Session = Depends(get_session)) -> dict:
     s = get_security(session, market, code)
     snap = snapshot(session, s, as_of)
-    issues = [{"type": q.check_type, "detail": q.detail} for q in session.scalars(
-        select(DataQualityCheck).where(DataQualityCheck.dataset == "sec", DataQualityCheck.subject == s.code))]
-    note = {"JP": "日本株の財務データ（J-Quants の財務情報・EDINET）は未接続",
+    if s.market == "JP":
+        qs = select(DataQualityCheck).where(DataQualityCheck.dataset == "jquants_fins",
+                                            DataQualityCheck.subject.in_((s.code, jquants.to_jq_code(s.code))))
+    else:
+        qs = select(DataQualityCheck).where(DataQualityCheck.dataset == "sec", DataQualityCheck.subject == s.code)
+    issues = [{"type": q.check_type, "detail": q.detail} for q in session.scalars(qs)]
+    note = {"JP": "日本株の財務データは未取得です（J-Quants の財務情報を取得した銘柄だけ表示します）",
             "US": "SEC EDGAR の取得対象外の銘柄（対象は公開流通時価総額の大きい順）"}[s.market] if snap["data_status"] in ("not_connected", "insufficient") else None
-    return {"security": to_out(s).model_dump(), "as_of": as_of, "source": "SEC EDGAR XBRL（企業がSECに提出した書類）" if s.market == "US" else None,
-            "reliability": "一次情報" if s.market == "US" else None, "labels": LABELS, "note": note, "quality_issues": issues,
-            "tag_notes": tag_notes(snap), **snap}
+    out = {"security": to_out(s).model_dump(), "as_of": as_of, "source": "SEC EDGAR XBRL（企業がSECに提出した書類）" if s.market == "US" else None,
+           "reliability": "一次情報" if s.market == "US" else None, "labels": LABELS, "note": note, "quality_issues": issues,
+           "tag_notes": tag_notes(snap), **snap}
+    if s.market == "JP" and snap["annual"]:
+        plan = get_settings().jquants_plan
+        out.update(source=JP_SOURCE, reliability="公式データ（日本取引所グループ）", labels={**LABELS, **JP_LABELS},
+                   item_notes=JP_ITEM_NOTES,
+                   delay_note=("Freeプランのため、決算短信は開示から約12週間後にしか取得できません。最新の決算が反映されていない場合があります"
+                               if plan == "free" else None))
+    return out
 
 
 # 代わりのXBRLタグを使ったとき、意味の違いを画面で説明する（値を補完したのではなく、企業が報告した別の項目）

@@ -17,12 +17,13 @@ export interface MacroItem {
   prev_1m?: number | null; prev_1y?: number | null; yoy_pct?: number; outlier_flag?: boolean;
 }
 export interface History { key: string; name: string; points: [string, number][] }
-export interface FinRow { period_end: string; values: Record<string, number>; filed: string | null; tags?: Record<string, string> }
+export interface FinRow { period_end: string; values: Record<string, number>; filed: string | null; tags?: Record<string, string>; accounting_standard?: string }
 export interface Financials {
   security: Security; as_of: string | null; source: string | null; reliability: string | null; labels: Record<string, string>;
   note: string | null; quality_issues: { type: string; detail: Record<string, unknown> }[]; data_status: DataStatus;
   annual: FinRow[]; ttm: (FinRow & { basis: string }) | null; balance: FinRow | null; latest_filed: string | null;
   currency: string | null; other_currencies: string[]; tag_notes: { concept: string; tag: string; note: string }[];
+  item_notes?: string[]; delay_note?: string | null;  // 日本企業（J-Quants）のときだけ
 }
 export interface IndexQuote {
   key: string; name: string; market: string; value: number | null; change_pct: number | null; as_of: string | null;
