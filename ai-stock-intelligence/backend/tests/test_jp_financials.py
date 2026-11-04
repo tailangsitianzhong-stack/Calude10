@@ -194,3 +194,66 @@ def test_jquants_fins_not_scheduled_unless_enabled(monkeypatch):
     config.get_settings.cache_clear()
     assert schedule_intervals()["jquants_fins"] == 24 * 3600
     config.get_settings.cache_clear()
+
+
+def test_interrupted_run_is_marked_and_resume_skips_fetched_dates(client, monkeypatch):
+    """強制終了で「実行中」のまま残った記録は、次の実行で「中断」にする。取得済みの開示日は取り直さない。"""
+    from app import config
+    from app.models import FetchLog, IngestionRun
+    monkeypatch.setenv("NETWORK_SECRETS", "jquants")
+    config.get_settings.cache_clear()
+    seen = []
+
+    class Fake:
+        def __init__(self, *a, **k):
+            pass
+
+        def fins_summary(self, code=None, disc_date=None):
+            seen.append(disc_date)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(J, "JQuantsClient", Fake)
+    with SessionLocal() as s:
+        s.add(IngestionRun(dataset="financials_jp", source="test", status="running"))
+        s.add(FetchLog(dataset="financials_jp", key="2026-08-12", status="success", rows=0, fetched_at=datetime.now(timezone.utc)))
+        s.commit()
+        r = ING.run(s, max_dates=2)
+        assert r.status == "success"
+        assert s.query(IngestionRun).filter_by(dataset="financials_jp", status="interrupted").count() == 1
+    assert date(2026, 8, 12) not in seen and len(seen) == 2
+    config.get_settings.cache_clear()
+
+
+def test_refetching_logged_dates_updates_log_instead_of_failing(client, monkeypatch):
+    """取得済みの開示日を --dates で取り直しても、取得済みの記録の重複で失敗しない（実データの再実行で見つけた不具合）。"""
+    from app import config
+    from app.models import FetchLog
+    monkeypatch.setenv("NETWORK_SECRETS", "jquants")
+    config.get_settings.cache_clear()
+    with SessionLocal() as s:
+        _jp(s, "6060")
+        s.commit()
+
+    class Fake:
+        def __init__(self, *a, **k):
+            pass
+
+        def fins_summary(self, code=None, disc_date=None):
+            return [rec("R1", "60600", "2026-05-14", "FYFinancialStatements_Consolidated_JP", "FY", "2025-04-01",
+                        "2026-03-31", "2025-04-01", "2026-03-31", Sales=10)]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(J, "JQuantsClient", Fake)
+    for _ in range(2):
+        with SessionLocal() as s:
+            r = ING.run(s, dates=[date(2026, 5, 14)])
+            assert r.status == "success"
+    with SessionLocal() as s:
+        assert s.query(FetchLog).filter_by(key="2026-05-14").count() == 1
+        assert s.query(FinancialFact).filter_by(accn="R1").count() == 1
+    config.get_settings.cache_clear()

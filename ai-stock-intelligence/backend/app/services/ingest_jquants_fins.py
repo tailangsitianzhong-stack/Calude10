@@ -100,6 +100,12 @@ def _record_quality(session: Session, stats: dict) -> None:
 def run(session: Session, codes: list[str] | None = None, dates: list[date] | None = None,
         max_dates: int | None = None) -> IngestionRun:
     st = get_settings()
+    # 前回の実行が途中で止まった（プロセスの強制終了など）場合、その記録を「中断」にする。
+    # 取得済みの開示日は fetch_log に残っているので、今回の実行は残りの日付から再開する
+    for old in session.scalars(select(IngestionRun).where(IngestionRun.dataset == DATASET, IngestionRun.status == "running")):
+        old.status, old.message = "interrupted", "前回の実行が途中で終了した（取得済みの開示日は保存済み。残りは次の実行で取得）"
+        old.finished_at = old.finished_at or datetime.now(timezone.utc)
+    session.commit()
     mode = "codes" if codes else ("dates" if dates else "window")
     run = IngestionRun(dataset=DATASET, source=f"J-Quants API V2 fins/summary（{st.jquants_plan}・{mode}）", status="running")
     session.add(run)
@@ -127,12 +133,22 @@ def run(session: Session, codes: list[str] | None = None, dates: list[date] | No
             session.rollback()
             errors.append(f"{label}: {redact(str(e))[:150]}")
             return
-        stats = store_records(session, rows, secmap, datetime.now(timezone.utc))
-        _record_quality(session, stats)
-        if log_key:
-            session.add(FetchLog(dataset=DATASET, key=log_key, status="success", rows=len(rows),
-                                 fetched_at=datetime.now(timezone.utc)))
-        session.commit()
+        try:  # 保存と取得済みの記録は1つのトランザクション（途中で止まっても、その日の分は全部か何もなし）
+            stats = store_records(session, rows, secmap, datetime.now(timezone.utc))
+            _record_quality(session, stats)
+            if log_key:
+                # 取得済みの日付をもう一度取得した場合（--dates の指定など）は、記録を更新する（同じキーを2行にしない）
+                log = session.scalar(select(FetchLog).where(FetchLog.dataset == DATASET, FetchLog.key == log_key))
+                if log is None:
+                    session.add(FetchLog(dataset=DATASET, key=log_key, status="success", rows=len(rows),
+                                         fetched_at=datetime.now(timezone.utc)))
+                else:
+                    log.status, log.rows, log.fetched_at = "success", len(rows), datetime.now(timezone.utc)
+            session.commit()
+        except Exception as e:  # 保存の失敗も、その日付だけの失敗として記録し、他の日付は続ける
+            session.rollback()
+            errors.append(f"{label}: 保存に失敗 {redact(str(e))[:150]}")
+            return
         totals["requests_ok"] += 1
         for k in ("records", "disclosures_added", "facts_added", "facts_existing"):
             totals[k] += stats[k]
