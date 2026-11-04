@@ -61,6 +61,8 @@ def run(session: Session) -> IngestionRun:
     run = session.get(IngestionRun, run.id)
     run.rows, run.finished_at = total, datetime.now(timezone.utc)
     run.status = "success" if not errors else ("partial" if total else "failed")
+    if run.status == "failed":  # 日本株の株価は J-Quants だけ。代わりの値は作らず、障害として記録する
+        notes.append("日本株の株価に代わりの取得元はないため、取得しなかった（表示は保存済みの終値のまま）")
     run.message = "; ".join(notes + errors[:5])[:1000] or None
     run.source_as_of = session.scalar(select(func.max(DailyPrice.trade_date)).where(DailyPrice.provider == "jquants"))
     session.commit()

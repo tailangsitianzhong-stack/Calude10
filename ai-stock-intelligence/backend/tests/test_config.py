@@ -89,7 +89,7 @@ def test_empty_values_in_env_file_fall_back_to_defaults(clean_env, tmp_path):
     f.write_text("DATABASE_URL=\nJQUANTS_PLAN=\nMASSIVE_BASE_URL=\nSEC_UNIVERSE_SIZE=\nSEC_EXTRA_TICKERS=\n", encoding="utf-8")
     s = Settings(_env_file=(f,))
     assert s.database_url.startswith("sqlite:///") and s.jquants_plan == "free"
-    assert s.massive_base_url == "https://api.polygon.io" and s.sec_universe_size == 150 and s.sec_extra_tickers.startswith("KO")
+    assert s.massive_base_url == "https://api.massive.com" and s.sec_universe_size == 150 and s.sec_extra_tickers.startswith("KO")
 
 
 def test_fred_api_json_parser():

@@ -3,7 +3,9 @@
 - Tiingo：https://api.tiingo.com/tiingo/daily/{ticker}/prices（Authorization: Token <key>）
   無料プランは 50リクエスト/時・1,000/日・月500銘柄、社内利用（Internal Use）のみ【2026-11時点の公開情報、要確認】
 - Massive（旧 Polygon.io）：/v2/aggs/grouped/locale/us/market/stocks/{date}（全銘柄の1日分を1回で取得）
-  無料プランは 5リクエスト/分・過去2年・日足【同上、要確認】。旧URL api.polygon.io も引き続き利用可能とされる
+  接続先は公式ドキュメントの https://api.massive.com（旧 https://api.polygon.io も同じ応答）。認証は Authorization: Bearer <key>
+  （公式：https://massive.com/docs/rest/quickstart）。無料の Stocks Basic：日足（終値ベース）・5リクエスト/分。
+  全銘柄の日足（grouped daily）は「すべての株式プランで利用可能」（公式：.../aggregates/daily-market-summary）
 
 どちらもキー未設定なら使わない（画面は「未接続」）。
 """
@@ -58,7 +60,7 @@ class MassiveClient:
     name = "massive"
     delay_note = "日足（無料プランは前営業日までの終値）"
 
-    def __init__(self, api_key: str, base_url: str = "https://api.polygon.io", network_secret: bool = False):
+    def __init__(self, api_key: str, base_url: str = "https://api.massive.com", network_secret: bool = False):
         if not api_key and not network_secret:
             raise ValueError("Massive（旧Polygon.io）のAPIキーが未設定です（MASSIVE_API_KEY）")
         self.base = base_url.rstrip("/")
