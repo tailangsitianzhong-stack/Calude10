@@ -8,6 +8,7 @@ const STATUS: Record<DataStatus, { label: string; cls: string; dot: string }> = 
   insufficient: { label: "データ不足", cls: "text-warn border-warn/30 bg-warn/10", dot: "bg-warn" },
   error: { label: "エラー", cls: "text-down border-down/30 bg-down/10", dot: "bg-down" },
   not_implemented: { label: "準備中", cls: "text-info border-info/30 bg-info/10", dot: "bg-info" },
+  unknown: { label: "鮮度判定不能", cls: "text-muted border-line bg-raised", dot: "bg-faint" },
 };
 
 export function StatusBadge({ status, children }: { status: DataStatus; children?: ReactNode }) {

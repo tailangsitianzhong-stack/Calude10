@@ -4,7 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-DataStatus = Literal["ok", "stale", "not_connected", "insufficient", "error", "not_implemented"]
+# unknown：鮮度（古い・古くない）を判定できない（例：J-Quants のプラン未設定・設定不備のときの日本企業の財務データ）
+DataStatus = Literal["ok", "stale", "not_connected", "insufficient", "error", "not_implemented", "unknown"]
 
 
 class ProviderOut(BaseModel):
@@ -75,6 +76,8 @@ class IndexQuote(BaseModel):
     is_delayed: bool | None
     data_status: DataStatus
     note: str
+    # TOPIX だけ：状態（services/jquants_plan.topix_state）。未取得・プランの範囲外（API の応答／プランの仕様）・取得失敗などを区別する
+    index_state: str | None = None
 
 
 class SecurityOut(BaseModel):

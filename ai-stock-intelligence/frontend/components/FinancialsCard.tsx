@@ -1,4 +1,4 @@
-import { currencyName, fmtDay, fmtMoney, fmtPerShare } from "@/lib/format";
+import { currencyName, fmtDate, fmtDay, fmtMoney, fmtPerShare } from "@/lib/format";
 import type { Financials } from "@/lib/types";
 import { Card, Placeholder, StatusBadge } from "./ui";
 
@@ -124,6 +124,11 @@ export function FinancialsCard({ f }: { f: Financials | null }) {
           {f.ttm && <div>直近4四半期の計算：{f.ttm.basis}</div>}
           <div>{jp ? `最新の開示：${fmtDay(f.latest_filed)}。値は会計上の数値で、一時的な損益を含みます。`
                    : `最新の提出：${fmtDay(f.latest_filed)}。値は会計上（GAAP）の数値で、一時的な損益を含みます。`}</div>
+          {f.fetched_at && <div data-testid="financials-fetched">データの取得日時：{fmtDate(f.fetched_at)}</div>}
+          {f.freshness && <div data-testid="financials-freshness">{f.freshness === "unknown"
+            ? "鮮度：判定できません（J-Quants のプランが未確認、または設定不備のため。古い・古くないのどちらとも断定しません）"
+            : f.freshness === "stale" ? `鮮度：古いデータ（最新の${jp ? "開示" : "提出"}から${f.freshness_days}日超）`
+            : `鮮度：最新の範囲内（最新の${jp ? "開示" : "提出"}から${f.freshness_days}日以内）`}</div>}
           {f.quality_issues.length > 0 && (
             <div className="mt-1 text-warn">
               ⚠ 品質の注意：{f.quality_issues.map(issueText).join("、")}

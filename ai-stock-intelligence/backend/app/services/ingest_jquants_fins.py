@@ -136,14 +136,22 @@ def run(session: Session, codes: list[str] | None = None, dates: list[date] | No
         old.finished_at = old.finished_at or datetime.now(timezone.utc)
     session.commit()
     mode = "codes" if codes else ("dates" if dates else "window")
-    run = IngestionRun(dataset=DATASET, source=f"J-Quants API V2 fins/summary（{st.jquants_plan}・{mode}）", status="running")
+    from . import jquants_plan
+    run = IngestionRun(dataset=DATASET, source=f"J-Quants API V2 fins/summary（{jquants_plan.run_source_label(st)}・{mode}）",
+                       status="running")
     session.add(run)
     session.commit()
     if not st.has_credential("jquants"):
         run.status, run.message, run.finished_at = "skipped", "APIキー未設定（JQUANTS_API_KEY またはネットワークシークレット）", datetime.now(timezone.utc)
         session.commit()
         return run
-    client = jquants.JQuantsClient(st.jquants_api_key, st.jquants_plan, network_secret=st.via_network_secret("jquants"))
+    if st.jquants_fetch_plan is None:  # 設定不備：Free に置き換えずに取得を止める（API に接続しない）
+        import logging
+        logging.getLogger(__name__).error("J-Quants の財務情報の取得を停止：%s", jquants_plan.invalid_message(st))
+        run.status, run.message, run.finished_at = "skipped", jquants_plan.invalid_message(st)[:1000], datetime.now(timezone.utc)
+        session.commit()
+        return run
+    client = jquants.JQuantsClient(st.jquants_api_key, st.jquants_fetch_plan, network_secret=st.via_network_secret("jquants"))
     secmap = jp_security_map(session)
     totals = {"requests_ok": 0, "records": 0, "disclosures_added": 0, "facts_added": 0, "facts_existing": 0,
               "unmatched": 0, "problems": 0}
@@ -194,7 +202,7 @@ def run(session: Session, codes: list[str] | None = None, dates: list[date] | No
         else:
             if not dates:
                 fetched = {k for (k,) in session.execute(select(FetchLog.key).where(FetchLog.dataset == DATASET))}
-                dates = window_dates(date.today(), st.jquants_plan, fetched, max_dates or 20)
+                dates = window_dates(date.today(), st.jquants_fetch_plan, fetched, max_dates or 20)
             for d in dates:
                 if stop:
                     break

@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import get_session
 from ..models import IndexBar
-from ..providers import jquants
 from ..schemas import IndexQuote
+from ..services import jquants_plan
 from ..services.quality import staleness
 
 router = APIRouter(prefix="/api/v1/market", tags=["market"])
@@ -22,8 +22,7 @@ PROVIDER_LABEL = {"FRED": "FRED（各指数の提供元のデータ）", "jquant
 def _delay_note(provider: str) -> str:
     if provider == "FRED":
         return "終値（FREDは翌営業日に更新）。リアルタイムではありません"
-    plan = get_settings().jquants_plan
-    return jquants.DELAY_NOTE.get(plan, "")
+    return jquants_plan.delay_label(get_settings())  # J-Quants：プランが確認できないときは推測しない
 
 
 @router.get("/overview", response_model=list[IndexQuote])
@@ -32,16 +31,18 @@ def overview(session: Session = Depends(get_session)) -> list[IndexQuote]:
     for key, name, mkt, provs in INDICES:
         bars = list(session.scalars(select(IndexBar).where(IndexBar.index_key == key, IndexBar.provider.in_(provs))
                                     .order_by(IndexBar.trade_date.desc()).limit(2)))
+        if key == "topix":  # 未取得・プランの範囲外（API の応答／プランの仕様）・取得失敗・プラン未確認などを区別する
+            last = bars[0] if bars else None
+            state, status, note = jquants_plan.topix_state(session, get_settings(), last)
+            chg = (last.close / bars[1].close - 1) * 100 if last and len(bars) > 1 and bars[1].close else None
+            out.append(IndexQuote(key=key, name=name, market=mkt, value=last.close if last else None, change_pct=chg,
+                                  as_of=last.trade_date if last else None,
+                                  provider=PROVIDER_LABEL.get(last.provider, last.provider) if last else None,
+                                  is_delayed=True if last else None, data_status=status, note=note, index_state=state))
+            continue
         if not bars:
-            st = get_settings()
-            if key == "topix" and st.has_credential("jquants") and st.jquants_plan == "free":
-                note = "J-Quants の Free プランでは TOPIX は提供されていません（Light 以上で取得可能）"
-            elif key == "topix":
-                note = "J-Quants API キー未設定のため未接続"
-            else:
-                note = "未取得"
             out.append(IndexQuote(key=key, name=name, market=mkt, value=None, change_pct=None, as_of=None, provider=None,
-                                  is_delayed=None, data_status="not_connected", note=note))
+                                  is_delayed=None, data_status="not_connected", note="未取得"))
             continue
         last = bars[0]
         chg = (last.close / bars[1].close - 1) * 100 if len(bars) > 1 and bars[1].close else None

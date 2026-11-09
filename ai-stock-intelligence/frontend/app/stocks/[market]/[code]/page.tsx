@@ -60,7 +60,7 @@ export default async function StockPage({ params }: { params: Params }) {
             <div><dt className="inline text-faint">種別 </dt><dd className="inline">{typeLabel[s.security_type] ?? s.security_type}</dd></div>
           </dl>
         </div>
-        <div className="rounded-xl border border-line bg-raised/60 px-5 py-4 md:min-w-[220px]" data-testid="quote">
+        <div className="rounded-xl border border-line bg-raised/60 px-5 py-4 md:min-w-[220px] md:max-w-xs" data-testid="quote">
           <div className="flex items-center justify-between gap-3 text-[11px] text-faint">現在株価 <StatusBadge status={quote.data_status}>{quote.price_state_label ?? undefined}</StatusBadge></div>
           <div className="num mt-2 text-3xl font-semibold">{quote.price === null ? <Dash /> : quote.price.toLocaleString()}<span className="ml-1 text-sm text-faint">{quote.currency}</span></div>
           <div className="mt-1 text-[11px] leading-relaxed text-faint">

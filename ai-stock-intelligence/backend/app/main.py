@@ -1,4 +1,5 @@
 """FastAPI アプリ。分析結果をデータベースから返すだけの読み取り中心のAPI（設計書 2章）。"""
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,6 +12,11 @@ from .routers import macro, market, securities, system
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from .config import get_settings
+    st = get_settings()
+    if st.jquants_plan_status == "invalid":  # 設定不備でも起動する（J-Quants の取得だけを止める）。ログで知らせる
+        from .services.jquants_plan import invalid_message
+        logging.getLogger("app").error("設定不備：%s", invalid_message(st))
     yield
 
 

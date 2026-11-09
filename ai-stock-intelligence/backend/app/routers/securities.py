@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..config import get_settings
-from ..models import DailyPrice, DataQualityCheck, IngestionRun, Security
+from ..models import DailyPrice, DataQualityCheck, Security
 from ..providers import jquants
 from ..services.financials import snapshot
-from ..services import price_status
+from ..services import jquants_plan, price_status
 from ..schemas import Quote, SearchItem, SearchResult, Section, SecurityDetail, SecurityOut
 from ..services.text import normalize
 
@@ -133,11 +133,10 @@ def financials(market: str, code: str, as_of: date | None = Query(None, descript
            "reliability": "一次情報" if s.market == "US" else None, "labels": LABELS, "note": note, "quality_issues": issues,
            "tag_notes": tag_notes(snap), **snap}
     if s.market == "JP" and snap["annual"]:
-        plan = get_settings().jquants_plan
         out.update(source=JP_SOURCE, reliability="公式データ（日本取引所グループ）", labels={**LABELS, **JP_LABELS},
                    item_notes=JP_ITEM_NOTES,
-                   delay_note=("Freeプランのため、決算短信は開示から約12週間後にしか取得できません。最新の決算が反映されていない場合があります"
-                               if plan == "free" else None))
+                   # プランの仕様で遅れがある場合・プラン未確認・設定不備のときだけ示す（未設定を Free と推測しない）
+                   delay_note=jquants_plan.financials_delay_note(get_settings()))
     return out
 
 

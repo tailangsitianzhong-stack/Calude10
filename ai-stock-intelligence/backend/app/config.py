@@ -33,10 +33,16 @@ class Settings(BaseSettings):
 
     # J-Quants API V2：ダッシュボードで発行したAPIキー（x-api-key ヘッダーで送る）
     jquants_api_key: str = ""
-    jquants_plan: str = "free"  # free / light / standard / premium（遅延・アクセス間隔に使う）
-    # JQUANTS_PLAN が実際に指定されたか（未指定なら取得の処理は従来どおり free の間隔で動くが、画面ではプランを
-    # 「未確認」として扱い、遅延を推測で表示しない）。環境変数からは設定できない（下の _plan_specified が決める）
+    # J-Quants のプラン。JQUANTS_PLAN の値から _plan_status が決める（環境変数から直接は設定できない項目を含む）：
+    # - jquants_plan：確認済みのプラン（free / light / standard / premium）。未設定・不正な値のときは ""（Free と推測しない）
+    # - jquants_plan_status："confirmed"（対応するプランを指定）／"unset"（未設定・空）／"invalid"（対応していない値）
+    # - jquants_plan_specified：JQUANTS_PLAN に何かが指定されたか（PR #10 の株価の表示で使用）
+    # - jquants_plan_invalid_value：不正な値（画面で設定不備を示すため。先頭32文字まで。APIキーではない）
+    # 取得の処理が使うプランは jquants_fetch_plan（未設定なら Free 相当の安全側の条件、不正な値なら取得しない）
+    jquants_plan: str = ""
+    jquants_plan_status: str = "unset"
     jquants_plan_specified: bool = False
+    jquants_plan_invalid_value: str = ""
     # V1のリフレッシュトークン（V2では使えない）。設定されていたら画面で注意を出すためだけに読む
     jquants_refresh_token: str = ""
 
@@ -93,29 +99,37 @@ class Settings(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
-    def _plan_specified(cls, data):
+    def _plan_status(cls, data):
+        """JQUANTS_PLAN を「確認済み・未設定・不正」に分ける。不正な値でも例外にしない（アプリ全体は起動し、
+        J-Quants の取得だけを止める）。不正な値・未設定を Free に置き換えない。"""
         if isinstance(data, dict):
-            data = {k: v for k, v in data.items() if k.lower() != "jquants_plan_specified"}
-            raw = next((v for k, v in data.items() if k.lower() == "jquants_plan"), "")
-            data["jquants_plan_specified"] = bool(str(raw or "").strip())
+            derived = ("jquants_plan_status", "jquants_plan_specified", "jquants_plan_invalid_value")
+            data = {k: v for k, v in data.items() if k.lower() not in derived}  # 環境変数からは設定させない
+            raw = str(next((v for k, v in data.items() if k.lower() == "jquants_plan"), "") or "").strip()
+            data = {k: v for k, v in data.items() if k.lower() != "jquants_plan"}
+            plan = raw.lower()
+            data["jquants_plan_specified"] = bool(raw)
+            if not raw:
+                data["jquants_plan_status"], data["jquants_plan"] = "unset", ""
+            elif plan in JQUANTS_PLANS:
+                data["jquants_plan_status"], data["jquants_plan"] = "confirmed", plan
+            else:
+                data["jquants_plan_status"], data["jquants_plan"] = "invalid", ""
+                data["jquants_plan_invalid_value"] = "".join(ch for ch in raw if ch.isprintable())[:32]
         return data
 
-    @field_validator("jquants_plan", "us_price_provider", "us_price_fallback", mode="before")
+    @field_validator("us_price_provider", "us_price_fallback", mode="before")
     @classmethod
     def _lower(cls, v):
         return (v or "").strip().lower()
 
-    @field_validator("jquants_plan", mode="before")
-    @classmethod
-    def _plan_default(cls, v):
-        return (v or "").strip().lower() or "free"
-
-    @field_validator("jquants_plan")
-    @classmethod
-    def _plan(cls, v):
-        if v not in JQUANTS_PLANS:
-            raise ValueError(f"JQUANTS_PLAN は {', '.join(JQUANTS_PLANS)} のいずれか（指定値：{v}）")
-        return v
+    @property
+    def jquants_fetch_plan(self) -> str | None:
+        """取得の処理が使うプラン。確認済みならそのプラン、未設定なら Free 相当の安全側の条件（"free"）、
+        不正な値なら None（取得しない）。表示には使わない（表示は jquants_plan・jquants_plan_status）。"""
+        if self.jquants_plan_status == "confirmed":
+            return self.jquants_plan
+        return "free" if self.jquants_plan_status == "unset" else None
 
     @field_validator("us_price_provider", "us_price_fallback")
     @classmethod

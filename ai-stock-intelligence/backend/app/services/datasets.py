@@ -5,9 +5,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import DailyPrice, DataQualityCheck, FinancialFact, IndexBar, IngestionRun, JpDisclosure, MacroObservation, Security
+from ..models import DataQualityCheck, FinancialFact, IndexBar, IngestionRun, JpDisclosure, MacroObservation, Security
 from ..providers import jquants
-from . import price_status
+from . import jquants_plan, price_status
 
 DATASETS = {
     "fred": {"name": "経済指標・金利・為替・株価指数（終値）", "provider": "FRED（セントルイス連銀）",
@@ -58,8 +58,9 @@ def dataset_status(session: Session) -> list[dict]:
         if key == "prices_jp":
             pctx = price_status.market_context(session, "JP")
             delay = pctx.delay_label if pctx.configured else "未接続"  # プラン未指定ならプランを推測しない
-        elif key == "financials_jp":
-            delay = jquants.DELAY_NOTE.get(st.jquants_plan, "") if st.has_credential("jquants") else "未接続"
+        elif key == "financials_jp":  # 確認済みのプランの仕様から。未設定・不正な値なら推測しない
+            delay = ((jquants.DELAY_NOTE.get(st.jquants_plan) if st.jquants_plan_status == "confirmed" else jquants_plan.delay_label(st))
+                     if st.has_credential("jquants") else "未接続")
         configured = {"prices_jp": st.has_credential("jquants"), "financials_jp": st.has_credential("jquants"),
                       # 取得の処理と同じ判定（provider_chain）：主の取得元にキーがなくても、代替にキーがあれば取得できる
                       "prices_us": bool(price_status.market_context(session, "US").providers),
@@ -92,14 +93,19 @@ def dataset_status(session: Session) -> list[dict]:
                             ("日本株の株価に代わりの取得元はありません" if key == "prices_jp" else "代わりの取得元でも取得できませんでした"))
         if key == "fred" and run and run.message and "FRED_API_KEY" in run.message:
             warnings.append("FRED_API_KEY が受け付けられなかったため、公開CSVで取得しています")
-        if key == "financials_jp" and st.has_credential("jquants") and st.jquants_plan == "free":
-            warnings.append("Freeプランのため、決算短信の財務情報は開示から約12週間後のものまでしか取得できません")
+        if key in ("prices_jp", "financials_jp") and st.has_credential("jquants") and st.jquants_plan_status == "invalid":
+            warnings.append(jquants_plan.invalid_message(st))  # 設定不備：J-Quants の取得を停止中
+        if key == "financials_jp" and st.has_credential("jquants") and st.jquants_plan_status != "invalid":
+            note = jquants_plan.financials_delay_note(st)
+            if note:
+                warnings.append(note)
         if key == "financials_jp" and rows:
             warnings.append("負債の合計は決算短信のサマリーに項目がないため未取得（EDINET での補完を検討中）")
         if key == "prices_jp" and st.has_credential("jquants"):
-            if not st.jquants_plan_specified:
-                warnings.append("J-Quants のプラン（JQUANTS_PLAN）が未設定のため、プランと株価の遅延を確認できません")
-            elif jquants.DELAY_DAYS.get(st.jquants_plan, 0):
+            if st.jquants_plan_status == "unset":
+                warnings.append("J-Quants のプラン（JQUANTS_PLAN）が未設定のため、プランと株価の遅延を確認できません。"
+                                + jquants_plan.unset_fetch_note())
+            elif st.jquants_plan_status == "confirmed" and jquants.DELAY_DAYS.get(st.jquants_plan, 0):
                 warnings.append(f"{pctx.delay_label}のため、株価は遅れています。現在の株価ではありません")
         extra = {}
         if key in ("prices_jp", "prices_us"):
