@@ -1,4 +1,4 @@
-export type DataStatus = "ok" | "stale" | "not_connected" | "insufficient" | "error" | "not_implemented";
+export type DataStatus = "ok" | "stale" | "not_connected" | "insufficient" | "error" | "not_implemented" | "unknown";
 
 export interface Provider {
   key: string; name: string; datasets: string[]; configured: boolean; status: DataStatus;
@@ -30,6 +30,7 @@ export interface Financials {
   annual: FinRow[]; ttm: (FinRow & { basis: string }) | null; balance: FinRow | null; latest_filed: string | null;
   currency: string | null; other_currencies: string[]; tag_notes: { concept: string; tag: string; note: string }[];
   item_notes?: string[]; delay_note?: string | null;  // 日本企業（J-Quants）のときだけ
+  freshness?: "fresh" | "stale" | "unknown"; freshness_days?: number | null; fetched_at?: string | null;
 }
 export interface IndexQuote {
   key: string; name: string; market: string; value: number | null; change_pct: number | null; as_of: string | null;

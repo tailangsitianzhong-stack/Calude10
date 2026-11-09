@@ -380,11 +380,14 @@ def snapshot(session: Session, s: Security, as_of: date | None = None) -> dict:
                 f.disc_time, f.accounting_standard, f.disc_period_start, f.disc_period_end = info.get(f.accn, (None, None, None, None))
             else:
                 f.disc_time, f.accounting_standard = None, ed.get(f.accn)
-    # 古さの判定：日本株は確認済みのプランの遅延（Free は約12週間）を加える。プラン未確認・設定不備なら推測せず、
-    # どのプランでも古い場合だけ「古い」とする（services/jquants_plan.py）
+    # 鮮度（古さ）の判定：最新の提出・開示から 120日＋提供元の遅延 を超えたら「古い」。
+    # 日本株は確認済みのプランの遅延（providers/jquants.py の表）を加える。プラン未設定・設定不備のときは
+    # 実際のプランが分からないため判定しない（"unknown"。古い・古くないのどちらにも断定しない）
     from . import jquants_plan
-    jp_delay = jquants_plan.delay_days(get_settings())
-    stale_days = 120 + ((jp_delay if jp_delay is not None else jquants_plan.max_delay_days()) if s.market == "JP" else 0)
+    stale_days: int | None = 120
+    if s.market == "JP":
+        jp_delay = jquants_plan.delay_days(get_settings())  # 未設定・設定不備なら None
+        stale_days = None if jp_delay is None else 120 + jp_delay
     cur = reporting_currency(facts)
     others = sorted({c for f in facts if (c := currency_of(f.unit)) and c != cur})
     facts = in_currency(facts, cur)
@@ -392,5 +395,11 @@ def snapshot(session: Session, s: Security, as_of: date | None = None) -> dict:
         parts = {"annual": jp_annual(facts), "ttm": jp_ttm(facts), "balance": jp_balance(facts)}
     else:
         parts = {"annual": annual(facts), "ttm": ttm(facts), "balance": latest_balance(facts)}
-    return {"data_status": "stale" if (as_of or date.today()) .toordinal() - latest_filed.toordinal() > stale_days else "ok",
-            **parts, "latest_filed": latest_filed.isoformat(), "currency": cur, "other_currencies": others}
+    if stale_days is None:
+        freshness = "unknown"
+    else:
+        freshness = "stale" if (as_of or date.today()).toordinal() - latest_filed.toordinal() > stale_days else "fresh"
+    fetched = max((f.fetched_at for f in facts if f.fetched_at), default=None)
+    return {"data_status": {"fresh": "ok", "stale": "stale", "unknown": "unknown"}[freshness], "freshness": freshness,
+            "freshness_days": stale_days, **parts, "latest_filed": latest_filed.isoformat(),
+            "fetched_at": fetched.isoformat() if fetched else None, "currency": cur, "other_currencies": others}

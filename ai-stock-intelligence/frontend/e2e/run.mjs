@@ -121,6 +121,14 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
       assert(/12週間|プランが未確認|設定不備/.test(dt), `財務の遅延の表示が想定と違う：${dt}`);
       if (PLAN_EXPECT === "unset") assert(!/Freeプラン|12週間/.test(dt), `プラン未設定なのに Free の遅延を表示：${dt}`);
     }
+    // 財務データの鮮度：確認済みのプランなら判定、プラン未設定・設定不備なら「判定できません」（古い・古くないを断定しない）
+    const fresh = page.getByTestId("financials-freshness");
+    if (await fresh.count()) {
+      const ft = await fresh.innerText();
+      assert(/鮮度：(古いデータ|最新の範囲内|判定できません)/.test(ft), `財務の鮮度の表示がない：${ft}`);
+      if (PLAN_EXPECT === "unset") assert(/判定できません/.test(ft) && !/古いデータ|最新の範囲内/.test(ft), `プラン未設定なのに鮮度を断定：${ft}`);
+      assert(/データの取得日時：\d{4}\/\d{2}\/\d{2}/.test(await page.getByTestId("financials-fetched").innerText()), "財務の取得日時の表示がない");
+    }
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-jp-fin-${label}.png`, fullPage: true });
   });

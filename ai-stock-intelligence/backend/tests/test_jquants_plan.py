@@ -203,18 +203,75 @@ def test_financials_dataset_delay_and_warnings(client, monkeypatch, raw, delay):
     config.get_settings.cache_clear()
 
 
-def test_financials_staleness_does_not_assume_free_when_unconfirmed(client, monkeypatch):
-    """古さの判定：確認済みはプランの遅延を加える。未確認はプランを推測せず、プランの仕様の表で最も遅いプランでも
-    古い場合だけ「古い」（表の値から計算する。Free の値を「Free」として流用しない）。"""
-    _jp_company_with_fins(disc_days_ago=200)  # 開示から200日：遅延のないプランなら古い（120日超）
-    _env(monkeypatch, NETWORK_SECRETS="jquants", JQUANTS_PLAN="light")
-    assert client.get("/api/v1/securities/JP/7203/financials").json()["data_status"] == "stale"
-    _env(monkeypatch, JQUANTS_PLAN="free")
-    assert client.get("/api/v1/securities/JP/7203/financials").json()["data_status"] == "ok"   # 120＋84日以内
-    _env(monkeypatch, JQUANTS_PLAN=None)
-    assert client.get("/api/v1/securities/JP/7203/financials").json()["data_status"] == "ok"   # 判定できない→古いと断定しない
-    monkeypatch.setitem(jquants.DELAY_DAYS, "free", 30)  # 表が変われば、未確認の上限も表から変わる
-    assert client.get("/api/v1/securities/JP/7203/financials").json()["data_status"] == "stale"
+def _fin(client):
+    return client.get("/api/v1/securities/JP/7203/financials").json()
+
+
+@pytest.mark.parametrize("plan", PLANS)
+def test_financials_freshness_uses_confirmed_plan_delay(client, monkeypatch, plan):
+    """確認済みのプラン：そのプランの遅延（providers/jquants.py の表）で鮮度を判定する（最新の開示から 120日＋遅延）。"""
+    _jp_company_with_fins(disc_days_ago=150)
+    _env(monkeypatch, NETWORK_SECRETS="jquants", JQUANTS_PLAN=plan)
+    days = 120 + jquants.DELAY_DAYS.get(plan, 0)
+    f = _fin(client)
+    assert f["freshness_days"] == days
+    assert (f["freshness"], f["data_status"]) == (("fresh", "ok") if 150 <= days else ("stale", "stale"))
+    if plan == "free":
+        assert f["freshness"] == "fresh"   # Free：120＋84日以内
+    else:
+        assert f["freshness"] == "stale"   # Light・Standard・Premium：遅延なし → 120日超は古い
+    config.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("plan", PLANS)
+def test_financials_freshness_boundaries_per_plan(client, monkeypatch, plan):
+    _env(monkeypatch, NETWORK_SECRETS="jquants", JQUANTS_PLAN=plan)
+    days = 120 + jquants.DELAY_DAYS.get(plan, 0)
+    _jp_company_with_fins(disc_days_ago=days)          # ちょうど基準の日数：古くない
+    assert _fin(client)["freshness"] == "fresh"
+    with SessionLocal() as s:  # 開示日を1日だけ古くする（テスト用DBの中だけ）
+        from app.models import FinancialFact
+        for f in s.query(FinancialFact).all():
+            f.filed = f.filed - timedelta(days=1)
+        s.commit()
+    assert _fin(client)["freshness"] == "stale"        # 基準の日数を1日超えたら古い
+    config.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("raw", [None, "", "gold"])
+@pytest.mark.parametrize("age", [10, 150, 400])
+def test_financials_freshness_unknown_when_plan_unconfirmed_or_invalid(client, monkeypatch, raw, age):
+    """未設定・設定不備：開示がどれだけ新しく・古くても、古い・古くないのどちらにも断定しない。
+    財務データ・最終開示日・取得日時・注意書きは表示する。"""
+    _jp_company_with_fins(disc_days_ago=age)
+    _env(monkeypatch, NETWORK_SECRETS="jquants", JQUANTS_PLAN=raw)
+    f = _fin(client)
+    assert f["freshness"] == "unknown" and f["data_status"] == "unknown" and f["freshness_days"] is None
+    assert f["annual"] and f["annual"][-1]["values"]["revenue"] == 1000             # 財務データの有無（値は表示する）
+    assert f["latest_filed"] == (TODAY - timedelta(days=age)).isoformat()           # 最終開示日
+    assert f["fetched_at"] is not None                                              # 取得日時
+    assert ("プランが未確認" if raw != "gold" else "設定不備") in f["delay_note"]      # 注意書き
+    config.get_settings.cache_clear()
+
+
+def test_invalid_plan_does_not_affect_us_financials_or_other_providers(client, monkeypatch):
+    """設定不備でも、米国企業の財務の鮮度判定・ほかのデータ連携の状態は通常どおり。"""
+    from app.models import FinancialFact
+    _env(monkeypatch, NETWORK_SECRETS="jquants", JQUANTS_PLAN="gold")
+    with SessionLocal() as s:
+        x = Security(market="US", code="AAA", cik=1, name="AAA Inc", name_search="aaa", security_type="common", is_active=True,
+                     source="t", fetched_at=datetime.now(timezone.utc))
+        s.add(x)
+        s.flush()
+        for concept, tag, v in (("revenue", "Revenues", 1000.0), ("net_income", "NetIncomeLoss", 100.0)):
+            s.add(FinancialFact(security_id=x.id, concept=concept, tag=tag, unit="USD", period_start=date(2025, 1, 1),
+                                period_end=date(2025, 12, 31), form="10-K", accn="a", filed=TODAY - timedelta(days=30),
+                                value=v, source="SEC EDGAR XBRL", fetched_at=datetime.now(timezone.utc)))
+        s.commit()
+    f = client.get("/api/v1/securities/US/AAA/financials").json()
+    assert f["freshness"] == "fresh" and f["data_status"] == "ok" and f["freshness_days"] == 120
+    provs = {p["key"]: p for p in client.get("/api/v1/system/status").json()["providers"]}
+    assert provs["jquants"]["status"] == "error" and provs["fred"]["status"] == "ok"
     config.get_settings.cache_clear()
 
 

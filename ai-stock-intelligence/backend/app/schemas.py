@@ -4,7 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-DataStatus = Literal["ok", "stale", "not_connected", "insufficient", "error", "not_implemented"]
+# unknown：鮮度（古い・古くない）を判定できない（例：J-Quants のプラン未設定・設定不備のときの日本企業の財務データ）
+DataStatus = Literal["ok", "stale", "not_connected", "insufficient", "error", "not_implemented", "unknown"]
 
 
 class ProviderOut(BaseModel):
