@@ -55,9 +55,10 @@ def test_invalid_values_are_rejected(clean_env):
     with pytest.raises(ValueError):
         make()
     clean_env.setenv("US_PRICE_PROVIDER", "")
+    # JQUANTS_PLAN の不正な値は、アプリ全体を止めずに「設定不備」にする（Free に置き換えない。J-Quants の取得だけ止める）
     clean_env.setenv("JQUANTS_PLAN", "gold")
-    with pytest.raises(ValueError):
-        make()
+    s = make()
+    assert (s.jquants_plan_status, s.jquants_plan, s.jquants_fetch_plan, s.jquants_plan_invalid_value) == ("invalid", "", None, "gold")
 
 
 def test_sec_user_agent_has_no_provisional_fallback(clean_env):
@@ -88,7 +89,9 @@ def test_empty_values_in_env_file_fall_back_to_defaults(clean_env, tmp_path):
     f = tmp_path / ".env"
     f.write_text("DATABASE_URL=\nJQUANTS_PLAN=\nMASSIVE_BASE_URL=\nSEC_UNIVERSE_SIZE=\nSEC_EXTRA_TICKERS=\n", encoding="utf-8")
     s = Settings(_env_file=(f,))
-    assert s.database_url.startswith("sqlite:///") and s.jquants_plan == "free"
+    # 空の JQUANTS_PLAN は「未設定」（Free とは区別する）。取得は Free 相当の安全側の条件で行う
+    assert s.database_url.startswith("sqlite:///") and s.jquants_plan == "" and s.jquants_plan_status == "unset"
+    assert s.jquants_fetch_plan == "free"
     assert s.massive_base_url == "https://api.massive.com" and s.sec_universe_size == 150 and s.sec_extra_tickers.startswith("KO")
 
 

@@ -8,7 +8,7 @@ from .base import ProviderInfo, ProviderStatus
 
 PROVIDERS: tuple[ProviderInfo, ...] = (
     ProviderInfo("jquants", "J-Quants API V2（日本取引所グループ）", ("prices_jp", "indices_jp", "financials_jp"),
-                 ("JQUANTS_API_KEY",), "https://jpx-jquants.com/", "Freeプランは約12週間遅延"),
+                 ("JQUANTS_API_KEY",), "https://jpx-jquants.com/", "遅延はプランによる（JQUANTS_PLAN。Free は約12週間）"),
     ProviderInfo("us_prices", "米国株の株価API（Tiingo / Massive）", ("prices_us",),
                  ("US_PRICE_PROVIDER", "TIINGO_API_KEY or MASSIVE_API_KEY"), "", "docs/phase3_data_sources.md 参照"),
     ProviderInfo("edinet", "EDINET API（金融庁）", ("financials_jp",), ("EDINET_API_KEY",),
@@ -43,6 +43,13 @@ def provider_statuses(settings: Settings) -> list[ProviderStatus]:
             status, msg = "not_connected", "SEC_USER_AGENT 未設定（アプリ名と連絡先メールアドレスが必要）"
         elif not configured:
             status, msg = "not_connected", "APIキー未設定（.env で設定）"
+        elif p.key == "jquants" and settings.jquants_plan_status == "invalid":
+            from ..services.jquants_plan import invalid_message  # 設定不備：Free に置き換えず、取得を止めていることを示す
+            status, msg = "error", invalid_message(settings)
+        elif p.key == "jquants" and settings.jquants_plan_status == "unset":
+            status, msg = "ok", "接続設定済み（プラン未確認：JQUANTS_PLAN 未設定。取得は Free 相当の安全側の条件）"
+        elif p.key == "jquants":
+            status, msg = "ok", f"接続設定済み（{settings.jquants_plan.capitalize()}プラン）"
         elif p.key == "edinet":
             status, msg = "ok", "接続設定済み（有価証券報告書・半期報告書から負債の合計を補完）"
         elif p.key == "fred":

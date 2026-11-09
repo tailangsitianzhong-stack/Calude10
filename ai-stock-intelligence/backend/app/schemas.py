@@ -75,6 +75,8 @@ class IndexQuote(BaseModel):
     is_delayed: bool | None
     data_status: DataStatus
     note: str
+    # TOPIX だけ：状態（services/jquants_plan.topix_state）。未取得・プランの範囲外（API の応答／プランの仕様）・取得失敗などを区別する
+    index_state: str | None = None
 
 
 class SecurityOut(BaseModel):

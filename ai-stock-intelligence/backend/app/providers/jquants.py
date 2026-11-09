@@ -30,7 +30,18 @@ BASE = "https://api.jquants.com"
 RATE_PER_MIN = {"free": 5, "light": 60, "standard": 120, "premium": 500}
 DELAY_NOTE = {"free": "約12週間遅延（Freeプラン）", "light": "前営業日までのデータ（Lightプラン）",
               "standard": "前営業日までのデータ（Standardプラン）", "premium": "前営業日までのデータ（Premiumプラン）"}
-DELAY_DAYS = {"free": 84}  # 12週間
+DELAY_DAYS = {"free": 84}  # 12週間（ここにないプランは前営業日まで＝0日）
+
+# TOPIX（/v2/indices/bars/daily/topix）をプランで取得できるか。出典を「確認済み」と「未検証」に分けて持つ：
+# - verified：この環境で実際の API の応答で確認した事実
+# - official_unverified：公式の案内（README の記載）による。この環境ではまだ取得を確認していない
+TOPIX_BY_PLAN = {
+    "free": {"available": False, "source": "verified",
+             "evidence": "API の応答で確認（2026-11-04：This API is not available on your subscription）"},
+    "light": {"available": True, "source": "official_unverified", "evidence": "公式案内・未検証"},
+    "standard": {"available": True, "source": "official_unverified", "evidence": "公式案内・未検証"},
+    "premium": {"available": True, "source": "official_unverified", "evidence": "公式案内・未検証"},
+}
 
 
 FINS_PER_MIN = 60  # /v2/fins/summary 専用の上限（プランに関わらない）

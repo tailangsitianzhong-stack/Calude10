@@ -58,23 +58,17 @@ class MarketContext:
     delay_days: int | None              # 提供元の遅延（日）。日本株でプラン未確認なら None
     max_delay_days: int                 # どのプランでも、これより古ければ確実に古い（プラン未確認のときに使う）
     delay_label: str                    # 例「Freeプラン・約12週間遅延」「プラン未確認」「日足（終値）」
-    plan_confirmed: bool | None         # 日本株：JQUANTS_PLAN が指定されているか。米国株は None
+    plan_confirmed: bool | None         # 日本株：対応するプランが指定されているか。米国株は None
     target_basis: str = "jquants"       # 取得対象（一部取得の分母）を決める取得元（target_ids を参照）
+    plan_status: str | None = None      # 日本株：confirmed / unset / invalid（invalid は設定不備で J-Quants の取得を止めている）
     notes: list[str] = field(default_factory=list)
 
 
-def _weeks(days: int) -> str:
-    return f"約{days // 7}週間" if days % 7 == 0 else f"約{days}日"
-
-
 def jp_delay(st) -> tuple[int | None, str, bool]:
-    """（遅延日数, 表示, プラン確認済みか）。プランの遅延は providers/jquants.py の仕様の表から決める。"""
-    if not st.jquants_plan_specified:
-        return None, "プラン未確認（JQUANTS_PLAN 未設定のため遅延を判定できません）", False
-    plan = st.jquants_plan
-    days = jquants.DELAY_DAYS.get(plan, 0)
-    name = plan.capitalize()
-    return days, (f"{name}プラン・{_weeks(days)}遅延" if days else f"{name}プラン・前営業日まで"), True
+    """（遅延日数, 表示, プラン確認済みか）。プランの遅延は providers/jquants.py の仕様の表から決める
+    （services/jquants_plan.py）。未設定・不正な値のときは遅延を推測しない。"""
+    from . import jquants_plan
+    return jquants_plan.delay_days(st), jquants_plan.delay_label(st), st.jquants_plan_status == "confirmed"
 
 
 def market_context(session: Session, market: str) -> MarketContext:
@@ -86,7 +80,8 @@ def market_context(session: Session, market: str) -> MarketContext:
     if market == "JP":
         days, label, confirmed = jp_delay(st)
         return MarketContext("JP", st.has_credential("jquants"), ("jquants",), last, days,
-                             max(jquants.DELAY_DAYS.get(p, 0) for p in JQUANTS_PLANS), label, confirmed)
+                             max(jquants.DELAY_DAYS.get(p, 0) for p in JQUANTS_PLANS), label, confirmed,
+                             plan_status=st.jquants_plan_status)
     chain = tuple(ingest_us_prices.provider_chain(st))
     # 取得対象は主の取得元で決まる（target_ids）。取得元が1つも使えないときは、設定された主の取得元（なければ Tiingo）
     basis = chain[0] if chain else (st.us_price_provider if st.us_price_provider in ("tiingo", "massive") else "tiingo")
@@ -155,12 +150,17 @@ def _outage(ctx: MarketContext) -> str:
 
 def _ok_label(ctx: MarketContext) -> str:
     if ctx.market == "JP":
-        return f"取得済み（{ctx.delay_label}）" if ctx.plan_confirmed else "取得済み（プラン未確認・遅延を判定できません）"
+        if ctx.plan_confirmed:
+            return f"取得済み（{ctx.delay_label}）"
+        return "取得済み（設定不備・遅延を判定できません）" if ctx.plan_status == "invalid" else "取得済み（プラン未確認・遅延を判定できません）"
     return "取得済み"
 
 
 def _delay_note(ctx: MarketContext) -> str:
     if ctx.market == "JP":
+        if ctx.plan_status == "invalid":
+            from . import jquants_plan
+            return f"{jquants_plan.invalid_message(get_settings())}。遅延の有無を判定できません。リアルタイムの株価ではありません"
         if not ctx.plan_confirmed:
             return "J-Quants のプランが未確認のため（JQUANTS_PLAN 未設定）、遅延の有無を判定できません。リアルタイムの株価ではありません"
         return f"{jquants.DELAY_NOTE.get(get_settings().jquants_plan, ctx.delay_label)}。リアルタイムの株価ではありません"
@@ -169,6 +169,18 @@ def _delay_note(ctx: MarketContext) -> str:
 
 def security_state(session: Session, s: Security, ctx: MarketContext, p: DailyPrice | None = None,
                    with_counts: bool = True, lookup: bool = True) -> PriceState:
+    """1銘柄の株価の状態。日本株で JQUANTS_PLAN が設定不備のときは、状態（7つ）は変えずに表示名と説明で示す。"""
+    ps = _security_state(session, s, ctx, p, with_counts, lookup)
+    if s.market == "JP" and ctx.plan_status == "invalid" and ps.state != "not_configured":
+        from . import jquants_plan
+        ps.label = f"{ps.label}・設定不備"
+        if "JQUANTS_PLAN" not in ps.note:
+            ps.note = f"{jquants_plan.invalid_message(get_settings())}。{ps.note}"
+    return ps
+
+
+def _security_state(session: Session, s: Security, ctx: MarketContext, p: DailyPrice | None = None,
+                    with_counts: bool = True, lookup: bool = True) -> PriceState:
     """1銘柄の株価の状態。p はその銘柄の最新の株価（lookup=True で未指定なら調べる。検索結果ではまとめて調べて渡す）。"""
     if p is None and lookup:
         p = latest_prices(session, [s.id], ctx.providers).get(s.id)
@@ -249,7 +261,14 @@ class DatasetPriceState:
 
 
 def dataset_state(session: Session, market: str) -> DatasetPriceState:
-    """市場全体の株価の状態（データの状況ページ）。"""
+    """市場全体の株価の状態（データの状況ページ）。日本株で JQUANTS_PLAN が設定不備なら、表示名に「・設定不備」を加える。"""
+    ds = _dataset_state(session, market)
+    if market == "JP" and ds.state != "not_configured" and get_settings().jquants_plan_status == "invalid":
+        ds.label = f"{ds.label}・設定不備"
+    return ds
+
+
+def _dataset_state(session: Session, market: str) -> DatasetPriceState:
     ctx = market_context(session, market)
     provs = ("jquants",) if market == "JP" else ("tiingo", "massive")
     latest = session.scalar(select(func.max(DailyPrice.trade_date)).where(DailyPrice.provider.in_(provs)))

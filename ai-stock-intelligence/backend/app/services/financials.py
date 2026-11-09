@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import EdinetDocument, FinancialFact, JpDisclosure, Security
-from ..providers import jquants
 from ..providers.sec import CONCEPTS, currency_of
 
 FLOW = {"revenue", "gross_profit", "operating_income", "pretax_income", "income_tax", "net_income", "net_income_common",
@@ -381,8 +380,11 @@ def snapshot(session: Session, s: Security, as_of: date | None = None) -> dict:
                 f.disc_time, f.accounting_standard, f.disc_period_start, f.disc_period_end = info.get(f.accn, (None, None, None, None))
             else:
                 f.disc_time, f.accounting_standard = None, ed.get(f.accn)
-    # 古さの判定：日本株の Freeプランは約12週間遅れてしか取得できないため、その分を加える
-    stale_days = 120 + (jquants.DELAY_DAYS.get(get_settings().jquants_plan, 0) if s.market == "JP" else 0)
+    # 古さの判定：日本株は確認済みのプランの遅延（Free は約12週間）を加える。プラン未確認・設定不備なら推測せず、
+    # どのプランでも古い場合だけ「古い」とする（services/jquants_plan.py）
+    from . import jquants_plan
+    jp_delay = jquants_plan.delay_days(get_settings())
+    stale_days = 120 + ((jp_delay if jp_delay is not None else jquants_plan.max_delay_days()) if s.market == "JP" else 0)
     cur = reporting_currency(facts)
     others = sorted({c for f in facts if (c := currency_of(f.unit)) and c != cur})
     facts = in_currency(facts, cur)

@@ -13,6 +13,8 @@ const SHOTS = process.env.SCREENSHOTS === "1";
 const API_DOWN = process.env.API_DOWN === "1";
 // PRICE_SCENARIO=composite … テスト用DBに仮の株価を入れた状態（backend/tests/e2e_seed_price_scenario.py）での複合状態の表示
 const PRICE_SCENARIO = process.env.PRICE_SCENARIO ?? "";
+// PLAN_EXPECT=unset … JQUANTS_PLAN 未設定で起動した API に対して、Free と表示しないことも確認する
+const PLAN_EXPECT = process.env.PLAN_EXPECT ?? "";
 if (SHOTS) mkdirSync(new URL("./screenshots/", import.meta.url), { recursive: true });
 
 let failures = 0;
@@ -65,8 +67,12 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
       assert(/FRED/.test(t) && /\d{4}\/\d{2}\/\d{2}/.test(t) && /リアルタイムではありません/.test(t), `${k} に出所・基準日・遅延の表示がない：${t}`);
     }
     const topix = page.getByTestId("index-topix");
-    assert((await topix.locator('[data-status="not_connected"]').count()) === 1, "TOPIX に未接続の表示がない");
+    // TOPIX はデータがない：未接続（キー未設定・プランの範囲外・未取得・プラン未確認）または設定不備・取得失敗（エラー）。値は作らない
+    assert((await topix.locator('[data-status="not_connected"], [data-status="error"]').count()) === 1, "TOPIX の状態の表示がない");
     assert(!/\d/.test(await topix.locator(".num").first().innerText()), "TOPIX に数値が表示されている");
+    const tnote = await topix.innerText();
+    assert(/APIキー未設定|提供されていません|未取得|プランが未確認|設定不備|取得に失敗/.test(tnote), `TOPIX の状態の説明がない：${tnote}`);
+    if (PLAN_EXPECT === "unset") assert(!/Free/.test(tnote), `プラン未設定なのに Free と表示：${tnote}`);
     const tenY = await page.getByTestId("macro-us_10y").innerText();
     assert(/\d/.test(tenY) && /\d{4}\/\d{2}\/\d{2}/.test(tenY), `米10年金利に値・基準日がない：${tenY}`);
     const bar = await page.getByRole("status", { name: "データの状態" }).innerText();
@@ -109,7 +115,12 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     assert(/純資産（非支配株主持分を含む）/.test(bal) && /自己資本比率/.test(bal), `純資産の表記がない：${bal}`);
     assert(/J-Quants/.test(await card.innerText()), "財務データの出所（J-Quants）が表示されていない");
     const delay = page.getByTestId("financials-delay");
-    if (await delay.count()) assert(/12週間/.test(await delay.innerText()), "Freeプランの遅延の表示がない");
+    if (await delay.count()) {
+      const dt = await delay.innerText();
+      // 確認済みの Free：12週間の遅延。プラン未設定：プラン未確認（Free と表示しない）。不正な値：設定不備
+      assert(/12週間|プランが未確認|設定不備/.test(dt), `財務の遅延の表示が想定と違う：${dt}`);
+      if (PLAN_EXPECT === "unset") assert(!/Freeプラン|12週間/.test(dt), `プラン未設定なのに Free の遅延を表示：${dt}`);
+    }
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-jp-fin-${label}.png`, fullPage: true });
   });
