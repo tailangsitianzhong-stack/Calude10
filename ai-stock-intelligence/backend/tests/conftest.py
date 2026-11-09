@@ -1,12 +1,41 @@
 """テスト用の設定。テストは一時的な SQLite を使い、本番のデータベースに触れない。
 
+- このファイルの読み込み時（アプリのモジュールを読み込む前）に、DATABASE_URL を一時フォルダの中の
+  「まだ存在しない」DB の絶対パスにする。テストの準備（client など）を通さずに DB を使おうとすると、
+  存在しない DB として止まる（作業用の DB を開くことも、新しい DB を黙って作ることもない）
+- テストの DB は tmp_path（pytest の一時フォルダ）の中に make_engine(…, create=True) で明示的に作る
+- 各テストの後に、使っていたエンジンが作業用の DB（backend/data/asi.sqlite3）でないことを確かめる
+
 テストで使う銘柄一覧は、実際の一覧の書式を再現した小さなファイルをテストの中で作る（画面には出ない）。
 """
+import atexit
 import os
+import shutil
+import tempfile
 from pathlib import Path
+
+_SESSION_TMP = tempfile.mkdtemp(prefix="asi-test-")
+atexit.register(shutil.rmtree, _SESSION_TMP, True)
+UNUSABLE_DB = os.path.join(_SESSION_TMP, "not-created.sqlite3")  # 存在しない（テストの準備なしに使うと止まる）
+os.environ["DATABASE_URL"] = f"sqlite:///{UNUSABLE_DB}"
+WORK_DB = (Path(__file__).resolve().parents[1] / "data" / "asi.sqlite3")  # 作業用の DB の場所（開かない）
 
 import openpyxl
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _never_the_work_db():
+    """テストの前後で、アプリのエンジンが作業用の DB を指していないことを確かめる（パスの比較だけ。DB は開かない）。"""
+    from app import db as dbmod
+
+    def check():
+        if dbmod.engine is not None:
+            p = dbmod.sqlite_path(dbmod.engine.url.render_as_string(hide_password=False))
+            assert p is None or os.path.realpath(p) != os.path.realpath(WORK_DB), "テストが作業用の DB を指している"
+    check()
+    yield
+    check()
 
 
 @pytest.fixture()
@@ -20,7 +49,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("JQUANTS_PLAN", "free")
     from app import config, db as dbmod
     config.get_settings.cache_clear()
-    engine = dbmod.make_engine(f"sqlite:///{db}")
+    engine = dbmod.make_engine(f"sqlite:///{db}", create=True)
     dbmod.engine = engine
     dbmod.SessionLocal.configure(bind=engine)
     dbmod.init_db(engine)

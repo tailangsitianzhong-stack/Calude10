@@ -38,8 +38,11 @@ docker compose run --rm worker python -m app.worker sec
 ## 起動方法（Dockerを使わない開発）
 
 ```bash
-# API（SQLite で動く）
+# API（SQLite で動く）。DB の保存先は DATABASE_URL に絶対パスで指定する（未設定・相対パスでは起動しない）
 cd backend && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+export DATABASE_URL=sqlite:////絶対パス/asi.sqlite3   # API・ワーカー・スクリプトで同じ値（docs/database.md）
+python -m app.worker init-db --create-new-sqlite   # 初回だけ：新しい空の DB を作る（既存の DB には何もしない）
+python -m app.worker check-db              # 接続先の確認（DB には書き込まない）
 python -m scripts.load_securities          # または --dir <ダウンロード済みファイルのディレクトリ>
 uvicorn app.main:app --port 8000
 # Web

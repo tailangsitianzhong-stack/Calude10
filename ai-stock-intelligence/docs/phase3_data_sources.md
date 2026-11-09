@@ -157,7 +157,8 @@ SEC_USER_AGENT=AI-STOCK-INTELLIGENCE/0.3 専用アドレス@ドメイン
 | `POSTGRES_USER` | Docker Compose | — | `asi` | データベースの利用者名 |
 | `POSTGRES_PASSWORD` | Docker Compose | **必須** | ランダムな文字列 | データベースのパスワード |
 | `POSTGRES_DB` | Docker Compose | — | `asi` | データベース名 |
-| `DATABASE_URL` | api・worker | — | 空（Docker では自動設定、空なら SQLite） | Docker を使わない場合の接続先 |
+| `DATABASE_URL` | api・worker | Docker を使わない場合は**必須** | Docker では自動設定。SQLite は絶対パスだけ（例 `sqlite:////srv/asi/data/asi.sqlite3`） | 接続先。空・相対パス・存在しない DB では起動しない（`docs/database.md`） |
+| `DB_CHECK_API_URL` | worker | — | 空（Docker では `http://api:8000`） | 起動時に API と同じ DB を使っているかを確かめる。違えば・確認できなければ止まる |
 | `JQUANTS_API_KEY` | worker・api | 日本株に必要 | ダッシュボードで発行したAPIキー | J-Quants API V2（`x-api-key`） |
 | `JQUANTS_PLAN` | worker・api | — | `free`（light / standard / premium） | 遅延の表示とアクセス間隔 |
 | `US_PRICE_PROVIDER` | worker・api | 米国株に必要 | `tiingo`（または `massive` / `polygon`） | 米国株の株価の取得元 |

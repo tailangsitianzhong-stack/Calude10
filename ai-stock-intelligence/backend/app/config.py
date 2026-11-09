@@ -29,7 +29,8 @@ JQUANTS_PLANS = ("free", "light", "standard", "premium")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ENV_FILES, env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "sqlite:///./data/asi.sqlite3"
+    # 接続先。既定値はない（未設定なら API・ワーカーは起動しない。SQLite は絶対パスだけ。検査は db.validate_url）
+    database_url: str = ""
 
     # J-Quants API V2：ダッシュボードで発行したAPIキー（x-api-key ヘッダーで送る）
     jquants_api_key: str = ""
@@ -94,8 +95,8 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def _db_default(cls, v):
-        # .env の「DATABASE_URL=」（空）は未指定として扱い、SQLite を使う
-        return (v or "").strip() or "sqlite:///./data/asi.sqlite3"
+        # 前後の空白だけを取り除く。空は「未設定」のまま残し、既定の SQLite に置き換えない（db.validate_url が起動を止める）
+        return (v or "").strip()
 
     @model_validator(mode="before")
     @classmethod
