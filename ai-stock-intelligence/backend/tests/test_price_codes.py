@@ -47,6 +47,19 @@ def _rows_by_code(sid=None, provider=None):
         return [(p.security_id, p.trade_date, p.close) for p in q.order_by(DailyPrice.trade_date)]
 
 
+FIELDS = ("open", "high", "low", "close", "volume", "fetched_at")
+OLD_FETCHED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def _snapshot(sid, d, provider):
+    """既存の行の全項目（始値・高値・安値・終値・出来高・取得日時）。"""
+    with SessionLocal() as s:
+        p = s.query(DailyPrice).filter_by(security_id=sid, trade_date=d, provider=provider).one()
+        out = {f: getattr(p, f) for f in FIELDS}
+        out["fetched_at"] = out["fetched_at"].replace(tzinfo=timezone.utc) if out["fetched_at"].tzinfo is None else out["fetched_at"]
+        return out
+
+
 def _weekdays(end, n):
     out, d = [], end
     while len(out) < n:
@@ -153,15 +166,26 @@ def test_jp_zero_rows_is_not_success(jq):
 
 
 def test_jp_codes_never_overwrites_existing_rows(jq):
+    """既存の行：偽の API が同じ日に別の値（始値・高値・安値・終値・出来高）を返しても、全項目と取得日時が変わらない。
+    新しい日付の行は通常どおり追加される。"""
     newest = TODAY - timedelta(days=84)
-    d0 = _weekdays(newest, 1)[0]
+    d0, d1, d2 = _weekdays(newest, 3)
     with SessionLocal() as s:
-        s.add(DailyPrice(security_id=jq["7203"], trade_date=d0, close=1.23, provider="jquants", fetched_at=datetime.now(timezone.utc)))
+        s.add(DailyPrice(security_id=jq["7203"], trade_date=d0, open=10.0, high=12.0, low=9.0, close=11.0, volume=100,
+                         provider="jquants", fetched_at=OLD_FETCHED))
         s.commit()
+    before = _snapshot(jq["7203"], d0, "jquants")
+    JQ.by_code_rows = [{"Code": "72030", "Date": d.isoformat(), "O": 900.0, "H": 990.0, "L": 800.0, "C": 950.0, "Vo": 99999}
+                       for d in (d0, d1, d2)]  # 既存の日（d0）も別の値で返す
     with SessionLocal() as s:
         r = ingest_jquants.run(s, codes=["7203"], days=3)
-    rows = {d: c for _, d, c in _rows_by_code()}
-    assert rows[d0] == 1.23 and len(rows) == 3 and r.rows == 2  # 既存の行はそのまま、新しい2日だけ追加
+    assert _snapshot(jq["7203"], d0, "jquants") == before == {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0,
+                                                              "volume": 100, "fetched_at": OLD_FETCHED}
+    for d in (d1, d2):  # 新しい日付は追加される（API の値のまま）
+        new = _snapshot(jq["7203"], d, "jquants")
+        assert (new["open"], new["high"], new["low"], new["close"], new["volume"]) == (900.0, 990.0, 800.0, 950.0, 99999)
+        assert new["fetched_at"] > OLD_FETCHED
+    assert r.status == "success" and r.rows == 2 and len(_rows_by_code()) == 3
 
 
 def test_jp_without_codes_keeps_full_market_behavior(jq):
@@ -302,17 +326,24 @@ def test_full_mode_without_codes_requests_sec_universe_as_before(us):
 
 
 def test_us_codes_never_overwrites_existing_rows(us):
+    """既存の行：偽の Tiingo が同じ日に別の値を返しても、全項目と取得日時が変わらない。新しい日付は追加される。"""
     d0 = TODAY - timedelta(days=3)
+    old = d0 - timedelta(days=1)
     with SessionLocal() as s:
-        s.add(DailyPrice(security_id=us["AAPL"], trade_date=d0 - timedelta(days=1), close=7.0, provider="tiingo",
-                         fetched_at=datetime.now(timezone.utc)))
+        s.add(DailyPrice(security_id=us["AAPL"], trade_date=old, open=6.0, high=8.0, low=5.0, close=7.0, volume=700,
+                         provider="tiingo", fetched_at=OLD_FETCHED))
         s.commit()
-    Tiingo.rows_for = {"AAPL": [{"code": "AAPL", "date": d0 - timedelta(days=1), "close": 999.0},
-                                {"code": "AAPL", "date": d0, "close": 200.0}]}
+    before = _snapshot(us["AAPL"], old, "tiingo")
+    Tiingo.rows_for = {"AAPL": [
+        {"code": "AAPL", "date": old, "open": 990.0, "high": 999.0, "low": 900.0, "close": 999.0, "volume": 1},
+        {"code": "AAPL", "date": d0, "open": 199.0, "high": 205.0, "low": 198.0, "close": 200.0, "volume": 5000}]}
     with SessionLocal() as s:
         r = ingest_us_prices.run(s, codes=["AAPL"])
-    rows = {d: c for _, d, c in _rows_by_code()}
-    assert rows[d0 - timedelta(days=1)] == 7.0 and rows[d0] == 200.0 and r.rows == 1
+    assert _snapshot(us["AAPL"], old, "tiingo") == before == {"open": 6.0, "high": 8.0, "low": 5.0, "close": 7.0,
+                                                               "volume": 700, "fetched_at": OLD_FETCHED}
+    new = _snapshot(us["AAPL"], d0, "tiingo")
+    assert (new["open"], new["high"], new["low"], new["close"], new["volume"]) == (199.0, 205.0, 198.0, 200.0, 5000)
+    assert new["fetched_at"] > OLD_FETCHED and r.status == "success" and r.rows == 1
 
 
 def test_us_codes_cross_check_only_for_specified(us):
@@ -360,3 +391,91 @@ def test_worker_passes_options(monkeypatch, argv, expect):
     monkeypatch.setattr(sys, "argv", ["worker", *argv])
     worker.main()
     assert seen == [expect]
+
+
+# ---- J-Quants のコード変換と、銘柄ごとの日足の要求（実際の API には接続しない） ----
+
+def test_to_jq_code():
+    assert jquants.to_jq_code("7203") == "72030"
+    assert jquants.to_jq_code("167A") == "167A0"      # 英字を含むコードも末尾0（普通株式）
+    assert jquants.to_jq_code("72030") == "72030"     # 5桁はそのまま
+    assert jquants.from_jq_code("72030") == "7203"
+
+
+def test_daily_bars_by_code_sends_5digit_code_and_period():
+    """daily_bars_by_code("7203", …) が、/v2/equities/bars/daily に code=72030・from・to（YYYYMMDD）を送る。
+    ページ送り（pagination_key）でも同じ条件を引き継ぐ。HTTP は偽物に置き換える（外部に接続しない）。"""
+    import httpx
+    c = jquants.JQuantsClient("", "free", network_secret=True)  # キーはプロキシが付ける設定（値は使わない）
+    sent = []
+    pages = [{"data": [{"Code": "72030", "Date": "2026-08-14", "C": 1.0}], "pagination_key": "k1"},
+             {"data": [{"Code": "72030", "Date": "2026-08-17", "C": 2.0}]}]
+
+    def fake_get(url, params=None, **kw):
+        sent.append((url, dict(params or {})))
+        return httpx.Response(200, json=pages[len(sent) - 1], request=httpx.Request("GET", url))
+
+    c.http.get = fake_get
+    rows = c.daily_bars_by_code("7203", date(2026, 6, 23), date(2026, 8, 17))
+    assert sent == [("https://api.jquants.com/v2/equities/bars/daily", {"code": "72030", "from": "20260623", "to": "20260817"}),
+                    ("https://api.jquants.com/v2/equities/bars/daily",
+                     {"code": "72030", "from": "20260623", "to": "20260817", "pagination_key": "k1"})]
+    assert [r["Date"] for r in rows] == ["2026-08-14", "2026-08-17"]
+    assert "x-api-key" not in c.http.client.headers  # ネットワークシークレット：キーを自分では付けない
+    c.close()
+
+
+def test_codes_mode_requests_the_window_from_window_function(jq):
+    """銘柄指定の実行が、期間（_window）の開始日・終了日をそのまま daily_bars_by_code に渡す。"""
+    with SessionLocal() as s:
+        ingest_jquants.run(s, codes=["7203"], days=40)
+    start, end = ingest_jquants._window("free", 40)
+    assert JQ.calls == [("by_code", "7203", start, end)]
+
+
+# ---- 米国株の取得の記録の「最新データの日付」（source_as_of） ----
+
+def test_us_source_as_of_codes_mode_uses_only_specified(us):
+    newer = TODAY - timedelta(days=1)
+    with SessionLocal() as s:  # 他の銘柄（MSFT）に、より新しい Tiingo の株価がある
+        s.add(DailyPrice(security_id=us["MSFT"], trade_date=newer, close=1.0, provider="tiingo", fetched_at=OLD_FETCHED))
+        s.commit()
+    Tiingo.rows_for = {"AAPL": [{"code": "AAPL", "date": TODAY - timedelta(days=5), "close": 200.0}]}
+    with SessionLocal() as s:
+        r = ingest_us_prices.run(s, codes=["AAPL"])
+    assert r.status == "success" and r.source_as_of == TODAY - timedelta(days=5)  # AAPL の日付（MSFT の新しい日付ではない）
+
+
+def test_us_source_as_of_codes_mode_zero_rows_is_none(us):
+    with SessionLocal() as s:
+        s.add(DailyPrice(security_id=us["MSFT"], trade_date=TODAY - timedelta(days=1), close=1.0, provider="tiingo",
+                         fetched_at=OLD_FETCHED))
+        s.commit()
+    Tiingo.rows_for = {}
+    with SessionLocal() as s:
+        r = ingest_us_prices.run(s, codes=["AAPL"])
+    assert r.status == "failed" and r.source_as_of is None  # 指定した銘柄の株価が0件：日付なし（他の銘柄の日付を使わない）
+
+
+def test_us_source_as_of_full_mode_unchanged(us):
+    """全銘柄の取得：従来どおり、取得元（Tiingo）の全銘柄の最新日。"""
+    newer = TODAY - timedelta(days=1)
+    with SessionLocal() as s:
+        s.add(DailyPrice(security_id=us["MSFT"], trade_date=newer, close=1.0, provider="tiingo", fetched_at=OLD_FETCHED))
+        s.commit()
+    Tiingo.rows_for = {"AAPL": [{"code": "AAPL", "date": TODAY - timedelta(days=5), "close": 200.0}],
+                       "KO": [{"code": "KO", "date": TODAY - timedelta(days=5), "close": 60.0}]}
+    with SessionLocal() as s:
+        r = ingest_us_prices.run(s)
+    assert r.source_as_of == newer and "銘柄指定" not in r.source
+
+
+def test_days_help_says_weekdays_not_trading_days(monkeypatch, capsys):
+    import sys
+    from app import worker
+    monkeypatch.setattr(sys, "argv", ["worker", "--help"])
+    with pytest.raises(SystemExit):
+        worker.main()
+    out = " ".join(capsys.readouterr().out.split())
+    assert "平日（月〜金）の数" in out and "取引日の数ではない" in out
+    assert "取引日の数ではない" in worker.__doc__

@@ -5,6 +5,7 @@
     python -m app.worker sec [--limit N] # SECの財務データ
     python -m app.worker jquants         # J-Quants（APIキー設定時のみ）
     python -m app.worker jquants --codes 7203 --days 40   # 指定した銘柄だけ（TOPIX・他の銘柄は取得しない）
+        # --days は「平日（月〜金）の数」。取引日の数ではない：祝日・休場日も数えるため、行数は指定より少なくなりうる
     python -m app.worker edinet --codes 7203,6861 --start 2025-10-01 --end 2026-06-30
     python -m app.worker edinet --all-listed --start 2026-06-01 --end 2026-06-15 --max-docs 200
                                          # 日本の普通株すべて。書類一覧を処理し終えた日は記録し、次回は取り直さない
@@ -86,7 +87,8 @@ def main() -> None:
     ap.add_argument("--codes", default=None,
                     help="jquants_fins・jquants・us_prices：銘柄コード（カンマ区切り）。jquants・us_prices は指定した銘柄だけを取得・保存")
     ap.add_argument("--days", type=int, default=None,
-                    help="jquants（--codes と一緒に）：取得する直近の平日の数（全銘柄の取得と同じ範囲・上限の中で）")
+                    help="jquants（--codes と一緒に）：取得する直近の平日（月〜金）の数。取引日の数ではない"
+                         "（祝日・休場日も数えるため、株価の行数は指定より少なくなりうる）。範囲・上限は全銘柄の取得と同じ")
     ap.add_argument("--no-fallback", action="store_true",
                     help="us_prices：代替の取得元（Massive など）に切り替えない。--codes のときは常に Tiingo だけ")
     ap.add_argument("--dates", default=None, help="jquants_fins：開示日 YYYY-MM-DD（カンマ区切り）")

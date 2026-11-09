@@ -202,6 +202,11 @@ def run(session: Session, codes: list[str] | None = None, no_fallback: bool = Fa
         if cross_check(session, only_ids):
             notes.append("取得元によって終値が1%超違う日があります（品質の記録を参照）")
     run.message = "; ".join(notes + down + errors[:5])[:1000] or None
-    run.source_as_of = session.scalar(select(func.max(DailyPrice.trade_date)).where(DailyPrice.provider.in_(chain)))
+    # 取得の記録の「最新データの日付」：全銘柄の取得は従来どおり（取得元の全銘柄の最新日）。
+    # 銘柄指定は、指定した銘柄の株価だけから計算する（他の銘柄の株価を混ぜない）。指定した銘柄の株価が0件なら None
+    q = select(func.max(DailyPrice.trade_date)).where(DailyPrice.provider.in_(chain))
+    if only_ids is not None:
+        q = q.where(DailyPrice.security_id.in_(only_ids))
+    run.source_as_of = session.scalar(q)
     session.commit()
     return run
