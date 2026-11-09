@@ -11,6 +11,8 @@ import { mkdirSync } from "node:fs";
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3000";
 const SHOTS = process.env.SCREENSHOTS === "1";
 const API_DOWN = process.env.API_DOWN === "1";
+// PRICE_SCENARIO=composite … テスト用DBに仮の株価を入れた状態（backend/tests/e2e_seed_price_scenario.py）での複合状態の表示
+const PRICE_SCENARIO = process.env.PRICE_SCENARIO ?? "";
 if (SHOTS) mkdirSync(new URL("./screenshots/", import.meta.url), { recursive: true });
 
 let failures = 0;
@@ -120,6 +122,19 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     assert(/CAD/.test(await page.getByTestId("financials-currency").innerText()), "報告通貨の表示がない");
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-enb-${label}.png`, fullPage: true });
+  });
+
+  if (PRICE_SCENARIO === "composite") await test(`[${label}] 株価の複合状態（一部取得・データ遅延あり／全銘柄取得済みの古いデータ）`, async () => {
+    await page.goto(BASE + "/data");
+    const card = (key) => page.getByTestId(`ds-${key}`).locator("xpath=ancestor::section[1]");
+    const jp = await card("prices_jp").innerText();
+    assert(/一部取得（100／[\d,]+ 銘柄）・データ遅延あり/.test(jp), `日本株：一部取得とデータ遅延の両方が表示されていない：${jp.slice(0, 200)}`);
+    assert(/データ遅延あり（提供元の遅延を超えて古い）/.test(await page.getByTestId("freshness-prices_jp").innerText()), "日本株の鮮度の行");
+    assert(/（一部取得）/.test(await page.getByTestId("coverage-prices_jp").innerText()), "日本株の取得率の行");
+    const us = await card("prices_us").innerText();
+    assert(/古いデータ（全 [\d,]+ 銘柄取得済み）/.test(us), `米国株：全銘柄取得済みの古いデータが表示されていない：${us.slice(0, 200)}`);
+    assert(/100\.0%（全銘柄取得済み）/.test(await page.getByTestId("coverage-prices_us").innerText()), "米国株の取得率の行");
+    if (SHOTS) await page.screenshot({ path: `e2e/screenshots/data-composite-${label}.png`, fullPage: true });
   });
 
   await test(`[${label}] データの状態ページ`, async () => {
