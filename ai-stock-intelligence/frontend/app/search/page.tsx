@@ -41,7 +41,7 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
                       <span className="block truncate text-sm font-medium">{s.name}</span>
                       <span className="block truncate text-[11px] text-faint">{marketLabel(s.market)}・{s.exchange ?? "—"}{s.sector ? `・${s.sector}` : ""}{s.size_class ? `・${s.size_class}` : ""}</span>
                     </span>
-                    <span className="hidden sm:block"><StatusBadge status="not_connected">株価 未接続</StatusBadge></span>
+                    <span className="hidden sm:block"><StatusBadge status={s.price_data_status ?? "not_connected"}>株価 {s.price_state_label ?? "状態不明"}</StatusBadge></span>
                   </Link>
                 </li>
               ))}

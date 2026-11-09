@@ -43,6 +43,12 @@ class DatasetStatus(BaseModel):
     message: str | None
     quality_issues: int
     warnings: list[str]
+    # 株価のデータセットだけ：接続状態（7つの状態）・表示名・取得対象の銘柄数・株価のある銘柄数・最新の株価の取得元
+    price_state: str | None = None
+    price_state_label: str | None = None
+    target_count: int | None = None
+    fetched_count: int | None = None
+    used_provider: str | None = None
 
 
 class SystemStatus(BaseModel):
@@ -90,6 +96,9 @@ class Quote(BaseModel):
     is_delayed: bool | None
     data_status: DataStatus
     note: str
+    # 株価の接続状態（services/price_status.py の7つの状態）と、その表示名。as_of は株価の基準日、fetched_at は取得日時
+    price_state: str | None = None
+    price_state_label: str | None = None
 
 
 class SecurityDetail(BaseModel):
@@ -97,11 +106,18 @@ class SecurityDetail(BaseModel):
     quote: Quote
 
 
+class SearchItem(SecurityOut):
+    """検索結果の1銘柄。株価の接続状態を添える（固定の「未接続」ではなく、実際の状態）。"""
+    price_state: str | None = None
+    price_state_label: str | None = None
+    price_data_status: DataStatus | None = None
+
+
 class SearchResult(BaseModel):
     query: str
     market: str | None
     total: int
-    items: list[SecurityOut]
+    items: list[SearchItem]
 
 
 class Section(BaseModel):

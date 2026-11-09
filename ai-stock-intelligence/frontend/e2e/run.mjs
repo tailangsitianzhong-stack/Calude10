@@ -15,6 +15,9 @@ if (SHOTS) mkdirSync(new URL("./screenshots/", import.meta.url), { recursive: tr
 
 let failures = 0;
 const results = [];
+// 株価の接続状態の表示名（backend/app/services/price_status.py の7つの状態）。固定の「未接続」は使わない
+const PRICE_STATE = /APIキー未設定|設定済み・未取得|取得済み|取得失敗（API障害）|古いデータ|一部取得|代替の取得元で取得/;
+const NO_PRICE_STATE = /APIキー未設定|設定済み・未取得|取得失敗（API障害）/;
 async function test(name, fn) {
   try { await fn(); results.push(["PASS", name]); }
   catch (e) { failures++; results.push(["FAIL", name, e.message.split("\n")[0]]); }
@@ -79,9 +82,12 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     assert(/直近4四半期/.test(t) && /提出日/.test(t) && /億ドル/.test(t), `財務の表の内容が想定と違う：${t.slice(0, 120)}`);
     assert(/SEC EDGAR/.test(await page.locator("#financials").innerText()), "財務データの出所が表示されていない");
     const quote = await page.getByTestId("quote").innerText();
-    if (!/未接続/.test(quote)) {
-      assert(/Tiingo|Massive/.test(quote) && /\d{4}\/\d{2}\/\d{2}/.test(quote) && /リアルタイムの株価ではありません/.test(quote),
-        `米国株の株価の取得元・基準日・遅延の表示がない：${quote}`);
+    assert(PRICE_STATE.test(quote), `米国株の株価の接続状態が表示されていない：${quote}`);
+    if (/終値（基準日）/.test(quote)) {
+      assert(/Tiingo|Massive/.test(quote) && /\d{4}\/\d{2}\/\d{2}/.test(quote) && /取得日時/.test(quote) && /リアルタイムの株価ではありません/.test(quote),
+        `米国株の株価の取得元・基準日・取得日時・遅延の表示がない：${quote}`);
+    } else {
+      assert(NO_PRICE_STATE.test(quote), `株価がないのに状態が合わない：${quote}`);
     }
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/detail-us-${label}.png`, fullPage: true });
@@ -122,6 +128,12 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     assert(/FRED/.test(fred) && /公的統計/.test(fred) && /\d{4}\/\d{2}\/\d{2}/.test(fred), "FREDの状態が表示されていない");
     const jp = await page.getByTestId("ds-prices_jp").innerText();
     assert(/J-Quants/.test(jp), "J-Quants の行がない");
+    for (const key of ["prices_jp", "prices_us"]) {
+      const t = await page.getByTestId(`ds-${key}`).innerText();
+      assert(/銘柄（取得対象のうち株価のある銘柄）/.test(t) && /株価の基準日/.test(t), `${key} の件数・基準日の表示がない：${t.slice(0, 160)}`);
+      const card = await page.getByTestId(`ds-${key}`).locator("xpath=ancestor::section[1]").innerText().catch(() => t);
+      assert(PRICE_STATE.test(card), `${key} の接続状態が表示されていない`);
+    }
     await noHorizontalOverflow(page);
   });
 
@@ -133,18 +145,23 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
     await page.getByTestId("results").waitFor();
     const first = page.getByTestId("results").locator("li").first();
     assert(/7203/.test(await first.innerText()), "トヨタ自動車（7203）が先頭にない");
+    const badge = await first.locator("[data-status]").innerText().catch(() => "");
+    assert(badge === "" || (/^株価 /.test(badge) && PRICE_STATE.test(badge)), `検索結果の株価の状態が実際の状態でない：${badge}`);
     await noHorizontalOverflow(page);
     if (SHOTS) await page.screenshot({ path: `e2e/screenshots/search-${label}.png`, fullPage: true });
     await first.locator("a").click();
     await page.getByTestId("security-name").waitFor();
     assert((await page.getByTestId("security-name").innerText()) === "トヨタ自動車", "詳細ページの銘柄名が違う");
     const quote = await page.getByTestId("quote").innerText();
-    if (/未接続/.test(quote)) {
-      assert(!/\d{2,}/.test(quote.replace(/JPY/g, "")), `未接続なのに株価に数値が表示されている：${quote}`);
+    assert(PRICE_STATE.test(quote), `日本株の株価の接続状態が表示されていない：${quote}`);
+    if (/終値（基準日）/.test(quote)) {
+      // 株価あり：取得元・基準日・取得日時・遅延（リアルタイムではない旨）が必ず表示されること
+      assert(/J-Quants/.test(quote) && /\d{4}\/\d{2}\/\d{2}/.test(quote) && /取得日時/.test(quote) && /リアルタイムの株価ではありません/.test(quote),
+        `株価の取得元・基準日・取得日時・遅延の表示がない：${quote}`);
     } else {
-      // 接続済み：取得元・基準日・遅延（リアルタイムではない旨）が必ず表示されること
-      assert(/J-Quants/.test(quote) && /\d{4}\/\d{2}\/\d{2}/.test(quote) && /リアルタイムの株価ではありません/.test(quote),
-        `株価の取得元・基準日・遅延の表示がない：${quote}`);
+      assert(NO_PRICE_STATE.test(quote), `株価がないのに状態が合わない：${quote}`);
+      const price = await page.getByTestId("quote").locator(".text-3xl").innerText();
+      assert(!/\d/.test(price), `株価がないのに数値が表示されている：${price}`);
     }
     assert(/未評価/.test(await page.locator("main").innerText()), "総合評価が「未評価」になっていない");
     await noHorizontalOverflow(page);

@@ -12,15 +12,15 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
     ProviderInfo("us_prices", "米国株の株価API（Tiingo / Massive）", ("prices_us",),
                  ("US_PRICE_PROVIDER", "TIINGO_API_KEY or MASSIVE_API_KEY"), "", "docs/phase3_data_sources.md 参照"),
     ProviderInfo("edinet", "EDINET API（金融庁）", ("financials_jp",), ("EDINET_API_KEY",),
-                 "https://disclosure2.edinet-fsa.go.jp/", "有価証券報告書等"),
+                 "https://disclosure2.edinet-fsa.go.jp/", "有価証券報告書・半期報告書（日本企業の負債の合計の補完）"),
     ProviderInfo("sec_edgar", "SEC EDGAR（米国証券取引委員会）", ("financials_us", "filings_us"), ("SEC_USER_AGENT",),
                  "https://www.sec.gov/os/accessing-edgar-data", "連絡先を含むUser-Agentが必要"),
     ProviderInfo("fred", "FRED（セントルイス連銀）", ("macro", "fx", "indices_close"), (),
                  "https://fred.stlouisfed.org/", "経済指標・為替・一部指数の終値"),
 )
 
-# 取得処理を実装済みのプロバイダー（EDINET は未実装）
-IMPLEMENTED: set[str] = {"jquants", "us_prices", "sec_edgar", "fred"}
+# 取得処理を実装済みのプロバイダー（EDINET は日本企業の負債の補完として実装済み：services/ingest_edinet.py）
+IMPLEMENTED: set[str] = {"jquants", "us_prices", "sec_edgar", "fred", "edinet"}
 
 def _is_set(settings: Settings, env: str) -> bool:
     if env == "TIINGO_API_KEY or MASSIVE_API_KEY":
@@ -43,6 +43,8 @@ def provider_statuses(settings: Settings) -> list[ProviderStatus]:
             status, msg = "not_connected", "SEC_USER_AGENT 未設定（アプリ名と連絡先メールアドレスが必要）"
         elif not configured:
             status, msg = "not_connected", "APIキー未設定（.env で設定）"
+        elif p.key == "edinet":
+            status, msg = "ok", "接続設定済み（有価証券報告書・半期報告書から負債の合計を補完）"
         elif p.key == "fred":
             status, msg = "ok", "公式API（FRED_API_KEY）" if settings.fred_api_key else "公開CSV（キー不要）"
         else:
