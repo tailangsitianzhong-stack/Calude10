@@ -10,9 +10,15 @@
 3. configured_not_fetched  APIキー設定済み・未取得（その銘柄・その市場の株価がまだない）。
 4. stale                   保存データあり・更新遅延（最新の基準日が、提供元の遅延＋許容日数より古い）。
 5. partial                 一部銘柄のみ取得成功（市場全体の判定だけ：取得対象のうち株価のある銘柄が一部、
-                           または最後の実行が partial）。銘柄ごとの判定では使わない（その銘柄は 3 か 6・7 になる）。
+                           または最後の実行が partial）。銘柄ごとの判定では使わない（その銘柄は 3 か 4・6・7 になる）。
 6. fallback                取得元の切り替えによる代替取得（米国株だけ：株価の取得元が provider_chain() の先頭ではない）。
 7. ok                      取得成功・最新データあり。
+
+銘柄ごと（security_state）と市場全体（dataset_state）を分ける：
+- 銘柄ページ・株価の推移・検索結果は、その銘柄自身の状態（1→2→3→4→6→7）。
+- データの状況ページは市場全体。1〜3 に当てはまらなければ、取得率（一部取得か）・鮮度（提供元の遅延を超えて古いか）・
+  代替の取得元かを別々に判定し、当てはまるものをすべて表示する（例「一部取得（100／4,447 銘柄）・データ遅延あり」）。
+  代表の状態（price_state）は 一部取得 → 古いデータ → 代替 → 取得済み の順で1つ選ぶ。
 
 - 「取得日時」（fetched_at・実行の終了時刻）と「株価の基準日」（trade_date）は別の項目として返す。
 - 実行の状態のうち running（実行中）・skipped（その時点で未設定）・interrupted（処理の中断）は、取得元の障害の
@@ -53,6 +59,7 @@ class MarketContext:
     max_delay_days: int                 # どのプランでも、これより古ければ確実に古い（プラン未確認のときに使う）
     delay_label: str                    # 例「Freeプラン・約12週間遅延」「プラン未確認」「日足（終値）」
     plan_confirmed: bool | None         # 日本株：JQUANTS_PLAN が指定されているか。米国株は None
+    target_basis: str = "jquants"       # 取得対象（一部取得の分母）を決める取得元（target_ids を参照）
     notes: list[str] = field(default_factory=list)
 
 
@@ -81,7 +88,9 @@ def market_context(session: Session, market: str) -> MarketContext:
         return MarketContext("JP", st.has_credential("jquants"), ("jquants",), last, days,
                              max(jquants.DELAY_DAYS.get(p, 0) for p in JQUANTS_PLANS), label, confirmed)
     chain = tuple(ingest_us_prices.provider_chain(st))
-    return MarketContext("US", bool(chain), chain, last, 0, 0, "日足（終値）", None)
+    # 取得対象は主の取得元で決まる（target_ids）。取得元が1つも使えないときは、設定された主の取得元（なければ Tiingo）
+    basis = chain[0] if chain else (st.us_price_provider if st.us_price_provider in ("tiingo", "massive") else "tiingo")
+    return MarketContext("US", bool(chain), chain, last, 0, 0, "日足（終値）", None, target_basis=basis)
 
 
 def is_stale(ctx: MarketContext, trade_date: date | None, today: date | None = None) -> bool:
@@ -92,18 +101,27 @@ def is_stale(ctx: MarketContext, trade_date: date | None, today: date | None = N
     return age > limit
 
 
-def target_ids(market: str):
-    """取得対象の銘柄（一部取得の分母）。
-    日本株：上場中の日本株すべて（J-Quants の日足は日付ごとに全銘柄を返すため。ETF・REIT を含む）。
-    米国株：財務データ（SEC）のある米国株（Tiingo が取得する分析対象。Massive の全銘柄の取得もこの範囲で数える）。"""
-    if market == "JP":
-        return select(Security.id).where(Security.market == "JP", Security.is_active.is_(True))
+TARGET_LABEL = {"jquants": "上場中の日本株", "tiingo": "財務データ（SEC）のある米国株",
+                "massive": "上場中の米国株"}
+
+
+def target_ids(ctx: MarketContext):
+    """取得対象の銘柄（一部取得の分母）。現在の取得の処理（services/ingest_*.py）が株価を取りに行く範囲と一致させる。
+    - 日本株（J-Quants）：日付ごとの日足（daily_bars_by_date）が全銘柄を返し、prices_store が銘柄一覧の全銘柄に
+      保存する → 上場中の日本株すべて（ETF・REIT を含む）。
+    - 米国株・主の取得元が Tiingo：ingest_us_prices._tiingo() は「財務データ（SEC）のある米国株」だけを取得する
+      → その銘柄（SEC の対象を増やせば自動的に分母も増える）。
+    - 米国株・主の取得元が Massive：grouped daily（1日1リクエスト）が市場全体を返し、銘柄一覧の全銘柄に保存する
+      → 上場中の米国株すべて。
+    取得の処理の対象を変えた場合は、ここも合わせて変える（tests/test_price_status.py で一致を確認している）。"""
+    if ctx.market == "JP" or ctx.target_basis == "massive":
+        return select(Security.id).where(Security.market == ctx.market, Security.is_active.is_(True))
     us = select(Security.id).where(Security.market == "US")
     return select(FinancialFact.security_id).where(FinancialFact.security_id.in_(us)).distinct()
 
 
-def is_target(session: Session, s: Security) -> bool:
-    if s.market == "JP":
+def is_target(session: Session, s: Security, ctx: MarketContext) -> bool:
+    if s.market == "JP" or ctx.target_basis == "massive":
         return bool(s.is_active)
     return session.scalar(select(FinancialFact.id).where(FinancialFact.security_id == s.id).limit(1)) is not None
 
@@ -111,7 +129,7 @@ def is_target(session: Session, s: Security) -> bool:
 def counts(session: Session, ctx: MarketContext) -> tuple[int, int]:
     """（取得対象の銘柄数, そのうち株価のある銘柄数）。株価は現在の設定の取得元に限らず、その市場の取得元で数える。"""
     provs = ("jquants",) if ctx.market == "JP" else ("tiingo", "massive")
-    t = target_ids(ctx.market).subquery()
+    t = target_ids(ctx).subquery()
     targets = session.scalar(select(func.count()).select_from(t)) or 0
     fetched = session.scalar(select(func.count(func.distinct(DailyPrice.security_id)))
                              .where(DailyPrice.provider.in_(provs), DailyPrice.security_id.in_(select(t.c[0])))) or 0
@@ -177,9 +195,8 @@ def security_state(session: Session, s: Security, ctx: MarketContext, p: DailyPr
             targets, fetched = counts(session, ctx)
             if fetched:
                 note += f"（取得対象 {targets:,} 銘柄のうち {fetched:,} 銘柄を取得済み）"
-            if not is_target(session, s):
-                note += ("。この銘柄は株価の取得対象（財務データのある米国株）に含まれていません" if s.market == "US"
-                         else "。この銘柄は株価の取得対象（上場中の日本株）に含まれていません")
+            if not is_target(session, s, ctx):
+                note += f"。この銘柄は株価の取得対象（{TARGET_LABEL.get(ctx.target_basis, ctx.target_basis)}）に含まれていません"
         return PriceState("configured_not_fetched", "設定済み・未取得", DATA_STATUS["configured_not_fetched"], note)
     # 4. 保存データあり・更新遅延
     if is_stale(ctx, p.trade_date):
@@ -215,6 +232,8 @@ def latest_prices(session: Session, ids: list[int], order: tuple[str, ...] = ())
 
 @dataclass
 class DatasetPriceState:
+    """市場全体の株価の状態。state は7つの状態のうち代表の1つ。取得率（partial）・鮮度（freshness）・代替の取得元
+    （fallback）は別々の項目にも持ち、label には当てはまるものをすべて並べる（例「一部取得（100／4,447 銘柄）・データ遅延あり」）。"""
     state: str
     label: str
     data_status: str
@@ -223,6 +242,10 @@ class DatasetPriceState:
     used_provider: str | None
     latest_data_date: date | None
     notes: list[str]
+    partial: bool | None = None          # 取得対象の一部だけ株価がある（または最後の実行が partial）
+    freshness: str | None = None         # "fresh"（提供元の遅延の範囲内）／"stale"（遅延を超えて古い）／None（株価なし）
+    fallback: bool | None = None         # 最新の株価が代替の取得元のもの（米国株）
+    target_label: str | None = None      # 取得対象の説明（分母の定義）
 
 
 def dataset_state(session: Session, market: str) -> DatasetPriceState:
@@ -236,9 +259,14 @@ def dataset_state(session: Session, market: str) -> DatasetPriceState:
         on_latest = {p for (p,) in session.execute(select(DailyPrice.provider).where(
             DailyPrice.provider.in_(provs), DailyPrice.trade_date == latest).distinct())}
         used = next((p for p in ctx.providers if p in on_latest), sorted(on_latest)[0] if on_latest else None)
+    partial = bool((targets and fetched < targets) or (ctx.last_run is not None and ctx.last_run.status == "partial"))
+    stale = latest is not None and is_stale(ctx, latest)
+    fallback = bool(market == "US" and used and ctx.providers and used != ctx.providers[0])
     base = dict(target_count=targets, fetched_count=fetched, used_provider=PROVIDER_LABEL.get(used, used) if used else None,
-                latest_data_date=latest)
-    notes = [f"遅延：{ctx.delay_label}"]
+                latest_data_date=latest, partial=partial if latest is not None else None,
+                freshness=None if latest is None else ("stale" if stale else "fresh"),
+                fallback=fallback if latest is not None else None, target_label=TARGET_LABEL.get(ctx.target_basis))
+    notes = [f"遅延：{ctx.delay_label}", f"取得対象：{TARGET_LABEL.get(ctx.target_basis, ctx.target_basis)}"]
     if not ctx.configured:
         return DatasetPriceState("not_configured", "APIキー未設定", "not_connected", notes=notes + (
             [f"保存済みの株価（{latest} 時点）は更新されません"] if latest else []), **base)
@@ -247,14 +275,21 @@ def dataset_state(session: Session, market: str) -> DatasetPriceState:
     if latest is None:
         return DatasetPriceState("configured_not_fetched", "設定済み・未取得", "not_connected",
                                  notes=notes + ["APIキーは設定済みですが、株価はまだ取得していません"], **base)
-    if is_stale(ctx, latest):
-        return DatasetPriceState("stale", "古いデータ", "stale",
-                                 notes=notes + [f"最新の株価（{latest}）が提供元の遅延を超えて古くなっています"], **base)
-    if (targets and fetched < targets) or (ctx.last_run is not None and ctx.last_run.status == "partial"):
-        why = [] if not (ctx.last_run and ctx.last_run.status == "partial") else ["最後の取得で一部の銘柄が失敗しました"]
-        return DatasetPriceState("partial", f"一部取得（{fetched:,}／{targets:,} 銘柄）", "ok", notes=notes + why, **base)
-    if market == "US" and used and ctx.providers and used != ctx.providers[0]:
-        return DatasetPriceState("fallback", f"代替の取得元で取得（{PROVIDER_LABEL.get(used, used)}）", "ok",
-                                 notes=notes + [f"主の取得元（{PROVIDER_LABEL.get(ctx.providers[0])}）ではなく代替の取得元の株価です"],
-                                 **base)
-    return DatasetPriceState("ok", _ok_label(ctx), "ok", notes=notes, **base)
+    # 株価がある場合：取得率・鮮度・代替の取得元を、それぞれ判定して両方とも示す（代表の状態は 一部取得 → 古いデータ
+    # → 代替 → 取得済み の順。銘柄ページはその銘柄自身の状態を表示するので、この組み合わせは市場全体だけで使う）
+    parts = []
+    if partial:
+        parts.append(f"一部取得（{fetched:,}／{targets:,} 銘柄）")
+        if ctx.last_run is not None and ctx.last_run.status == "partial":
+            notes.append("最後の取得で一部の銘柄が失敗しました")
+    if stale:
+        parts.append("データ遅延あり" if partial else f"古いデータ（全 {targets:,} 銘柄取得済み）" if targets else "古いデータ")
+        notes.append(f"最新の株価（{latest}）が提供元の遅延（{ctx.delay_label}）を超えて古くなっています")
+    if fallback:
+        parts.append(f"代替の取得元（{PROVIDER_LABEL.get(used, used)}）")
+        notes.append(f"主の取得元（{PROVIDER_LABEL.get(ctx.providers[0])}）ではなく代替の取得元の株価です")
+    state = "partial" if partial else "stale" if stale else "fallback" if fallback else "ok"
+    if state == "fallback":
+        parts = [f"代替の取得元で取得（{PROVIDER_LABEL.get(used, used)}）"]
+    label = "・".join(parts) if parts else _ok_label(ctx)
+    return DatasetPriceState(state, label, "stale" if stale else "ok", notes=notes, **base)

@@ -12,6 +12,7 @@ export interface DataSource {
   // 株価のデータセットだけ（backend/app/services/price_status.py の7つの状態）
   price_state?: PriceState | null; price_state_label?: string | null; target_count?: number | null;
   fetched_count?: number | null; used_provider?: string | null;
+  price_partial?: boolean | null; price_freshness?: "fresh" | "stale" | null; price_fallback?: boolean | null; target_label?: string | null;
 }
 /** 株価の接続状態：APIキー未設定／設定済み・未取得／取得済み／取得失敗（API障害）／古いデータ／一部取得／代替の取得元で取得 */
 export type PriceState = "not_configured" | "configured_not_fetched" | "ok" | "provider_error" | "stale" | "partial" | "fallback";

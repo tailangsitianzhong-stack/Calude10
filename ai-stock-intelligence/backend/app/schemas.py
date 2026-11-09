@@ -49,6 +49,10 @@ class DatasetStatus(BaseModel):
     target_count: int | None = None
     fetched_count: int | None = None
     used_provider: str | None = None
+    price_partial: bool | None = None       # 取得率：取得対象の一部だけ株価がある
+    price_freshness: str | None = None      # 鮮度：fresh（提供元の遅延の範囲内）／stale（遅延を超えて古い）
+    price_fallback: bool | None = None      # 最新の株価が代替の取得元のもの（米国株）
+    target_label: str | None = None         # 取得対象（分母）の説明
 
 
 class SystemStatus(BaseModel):

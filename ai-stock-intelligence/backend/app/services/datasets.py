@@ -104,7 +104,9 @@ def dataset_status(session: Session) -> list[dict]:
         extra = {}
         if key in ("prices_jp", "prices_us"):
             extra = {"price_state": pstate.state, "price_state_label": pstate.label, "target_count": pstate.target_count,
-                     "fetched_count": pstate.fetched_count, "used_provider": pstate.used_provider}
+                     "fetched_count": pstate.fetched_count, "used_provider": pstate.used_provider,
+                     "price_partial": pstate.partial, "price_freshness": pstate.freshness, "price_fallback": pstate.fallback,
+                     "target_label": pstate.target_label}
         out.append({"dataset": key, **meta, **extra, "delay": delay, "status": status, "configured": configured,
                     "last_run_at": run.finished_at if run else None, "last_run_status": run.status if run else None,
                     "last_success_at": ok_run.finished_at if ok_run else None, "latest_data_date": latest_data,

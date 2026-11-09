@@ -354,3 +354,134 @@ def test_key_values_never_appear_in_responses(client, monkeypatch, caplog):
     assert all(SECRET not in b for b in bodies) and SECRET not in caplog.text
     assert _quote(client, "US", "AAA")["price_state"] == "provider_error"  # キーは設定済み（値は出さない）
     config.get_settings.cache_clear()
+
+
+# ---- PR #10 の追加確認：市場全体の取得率と鮮度を両方示す／取得対象（分母）を取得の処理と一致させる ----
+
+def _jp_market(n_targets, fetched_ages, plan="free"):
+    """日本株の取得対象 n_targets 銘柄のうち、fetched_ages の数だけ株価を置く（値は基準日までの日数）。"""
+    ids = [_sec("JP", f"{1000 + i}") for i in range(n_targets)]
+    for sid, age in zip(ids, fetched_ages):
+        _price(sid, TODAY - timedelta(days=age), "jquants")
+    _run("prices_jp", "success")
+    return ids
+
+
+def test_partial_and_stale_are_both_shown(client, monkeypatch):
+    """一部取得かつ古いデータ：市場全体では「一部取得（m／n 銘柄）・データ遅延あり」。銘柄ページはその銘柄自身の状態。"""
+    _env(monkeypatch, **JP_ON)
+    _jp_market(4, [84 + 30])  # 4銘柄のうち1銘柄だけ、Freeプランの遅延（84日）＋許容を超えて古い
+    d = _ds(client, "prices_jp")
+    assert d["price_state"] == "partial" and d["price_state_label"] == "一部取得（1／4 銘柄）・データ遅延あり"
+    assert d["price_partial"] is True and d["price_freshness"] == "stale" and d["status"] == "stale"
+    assert (d["fetched_count"], d["target_count"]) == (1, 4) and d["target_label"] == "上場中の日本株"
+    assert _quote(client, "JP", "1000")["price_state"] == "stale"                 # 取得済みの銘柄：その銘柄は古いデータ
+    assert _quote(client, "JP", "1001")["price_state"] == "configured_not_fetched"  # 未取得の銘柄
+    config.get_settings.cache_clear()
+
+
+def test_partial_and_fresh(client, monkeypatch):
+    _env(monkeypatch, **JP_ON)
+    _jp_market(4, [85, 85])
+    d = _ds(client, "prices_jp")
+    assert d["price_state"] == "partial" and d["price_state_label"] == "一部取得（2／4 銘柄）"
+    assert d["price_partial"] is True and d["price_freshness"] == "fresh" and d["status"] == "ok"
+    assert _quote(client, "JP", "1000")["price_state"] == "ok"
+    config.get_settings.cache_clear()
+
+
+def test_all_fetched_but_stale(client, monkeypatch):
+    _env(monkeypatch, **JP_ON)
+    _jp_market(3, [84 + 30] * 3)
+    d = _ds(client, "prices_jp")
+    assert d["price_state"] == "stale" and d["price_state_label"] == "古いデータ（全 3 銘柄取得済み）"
+    assert d["price_partial"] is False and d["price_freshness"] == "stale" and d["status"] == "stale"
+    config.get_settings.cache_clear()
+
+
+def test_not_configured_with_past_prices_market_and_security(client, monkeypatch):
+    """APIキー未設定かつ過去の株価あり：市場全体も銘柄も「APIキー未設定」を優先。取得率・鮮度・保存済みの株価は示す。"""
+    a = _sec("US", "AAA", fin=True)
+    _sec("US", "BBB", fin=True)
+    _price(a, TODAY - timedelta(days=40), "tiingo", 55.0)
+    _run("prices_us", "success")
+    d = _ds(client, "prices_us")
+    assert d["price_state"] == "not_configured" and d["price_state_label"] == "APIキー未設定" and d["configured"] is False
+    assert (d["fetched_count"], d["target_count"]) == (1, 2) and d["price_freshness"] == "stale" and d["price_partial"] is True
+    assert d["latest_data_date"] == (TODAY - timedelta(days=40)).isoformat()
+    q = _quote(client, "US", "AAA")
+    assert q["price_state"] == "not_configured" and q["price"] == 55.0 and "更新していません" in q["note"]
+
+
+def test_provider_error_with_stored_prices_market_and_security(client, monkeypatch):
+    """API障害かつ保存済みの株価あり：市場全体も銘柄も「取得失敗（API障害）」。保存済みの株価は基準日つきで示し、値は作らない。"""
+    _env(monkeypatch, **JP_ON)
+    ids = _jp_market(2, [85])
+    _run("prices_jp", "failed")
+    d = _ds(client, "prices_jp")
+    assert d["price_state"] == "provider_error" and d["status"] == "error"
+    assert (d["fetched_count"], d["target_count"]) == (1, 2) and d["price_freshness"] == "fresh"
+    assert any("代わりの取得元はありません" in w for w in d["warnings"])
+    q = _quote(client, "JP", "1000")
+    assert q["price_state"] == "provider_error" and q["price"] == 100.0 and q["as_of"] == (TODAY - timedelta(days=85)).isoformat()
+    assert _quote(client, "JP", "1001")["price_state"] == "provider_error" and _quote(client, "JP", "1001")["price"] is None
+    config.get_settings.cache_clear()
+
+
+def test_us_target_matches_tiingo_fetch_selection(client, monkeypatch):
+    """米国株・主の取得元が Tiingo：分母は ingest_us_prices._tiingo() が実際に取得しに行く銘柄と一致する
+    （偽のクライアントで、要求した銘柄を記録する。外部APIには接続しない）。SEC の対象を増やせば分母も自動的に増える。"""
+    from app.providers import us_prices
+    _env(monkeypatch, **US_ON)
+    for c in ("AAA", "BBB", "CCC"):
+        _sec("US", c, fin=True)
+    _sec("US", "NOF", fin=False)   # 財務データなし：Tiingo は取得しない
+    asked = []
+
+    class Recording:
+        def __init__(self, *a, **k):
+            pass
+
+        def daily(self, ticker, start):
+            asked.append(ticker)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(us_prices, "TiingoClient", Recording)
+    with SessionLocal() as s:
+        ingest_us_prices._tiingo(s, config.get_settings())
+        ctx = price_status.market_context(s, "US")
+        assert ctx.target_basis == "tiingo"
+        target_codes = {c for (c,) in s.execute(select_codes(price_status.target_ids(ctx)))}
+    assert set(asked) == target_codes == {"AAA", "BBB", "CCC"}
+    assert _ds(client, "prices_us")["target_count"] == 3
+    _sec("US", "DDD", fin=True)  # SEC の対象が増えた
+    assert _ds(client, "prices_us")["target_count"] == 4
+    config.get_settings.cache_clear()
+
+
+def test_us_target_follows_primary_provider_massive(client, monkeypatch):
+    """米国株・主の取得元が Massive：grouped daily は市場全体を返すので、分母は上場中の米国株すべて。"""
+    _env(monkeypatch, NETWORK_SECRETS="massive", US_PRICE_PROVIDER="massive")
+    _sec("US", "AAA", fin=True)
+    nof = _sec("US", "NOF", fin=False)
+    with SessionLocal() as s:
+        s.add(Security(market="US", code="OLD", name="old", name_search="old", security_type="common", is_active=False,
+                       source="t", fetched_at=datetime.now(timezone.utc)))
+        s.commit()
+    _price(nof, TODAY - timedelta(days=1), "massive")
+    _run("prices_us", "success")
+    d = _ds(client, "prices_us")
+    assert d["target_label"] == "上場中の米国株" and (d["fetched_count"], d["target_count"]) == (1, 2)  # 上場廃止は数えない
+    assert d["price_state_label"] == "一部取得（1／2 銘柄）"
+    q = _quote(client, "US", "AAA")
+    assert q["price_state"] == "configured_not_fetched" and "含まれていません" not in q["note"]  # Massive の取得対象に入る
+    assert "取得対象 2 銘柄のうち 1 銘柄を取得済み" in q["note"]
+    config.get_settings.cache_clear()
+
+
+def select_codes(ids_query):
+    from sqlalchemy import select
+    return select(Security.code).where(Security.id.in_(ids_query))

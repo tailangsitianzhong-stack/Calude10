@@ -133,6 +133,11 @@ for (const [label, ctxOpts] of Object.entries(viewports)) {
       assert(/銘柄（取得対象のうち株価のある銘柄）/.test(t) && /株価の基準日/.test(t), `${key} の件数・基準日の表示がない：${t.slice(0, 160)}`);
       const card = await page.getByTestId(`ds-${key}`).locator("xpath=ancestor::section[1]").innerText().catch(() => t);
       assert(PRICE_STATE.test(card), `${key} の接続状態が表示されていない`);
+      // 市場全体：取得率と鮮度を両方表示する
+      const cov = await page.getByTestId(`coverage-${key}`).innerText();
+      const fresh = await page.getByTestId(`freshness-${key}`).innerText();
+      assert(/%|—/.test(cov) && /取得対象：/.test(cov), `${key} の取得率の表示がない：${cov}`);
+      assert(/提供元の遅延の範囲内|データ遅延あり|株価なし/.test(fresh), `${key} の鮮度の表示がない：${fresh}`);
     }
     await noHorizontalOverflow(page);
   });
