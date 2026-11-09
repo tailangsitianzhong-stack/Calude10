@@ -17,6 +17,13 @@ export async function generateMetadata({ params }: { params: Params }) {
   return { title: `${decodeURIComponent(code)}（${marketLabel(market.toUpperCase())}）` };
 }
 
+// 株価チャートが空のときの説明（株価の接続状態ごと。APIキーが設定済みなのに「未設定」と表示しない）
+const CHART_EMPTY: Record<string, string> = {
+  not_configured: "株価のAPIキーが未設定のため、チャートは表示しません。",
+  configured_not_fetched: "APIキーは設定済みですが、この銘柄の株価はまだ取得していません。",
+  provider_error: "株価の取得元の障害で取得できていないため、チャートは表示しません。",
+};
+
 const ANCHORS: Record<string, string> = {
   "AI総合評価（100点満点）": "score", "テクニカル分析": "technicals", "ニュース・開示": "news",
   "競合比較": "peers", "理論株価": "valuation", "将来株価予測": "forecast", "リスク分析": "risk", "AIによる総合コメント": "commentary",
@@ -27,7 +34,7 @@ export default async function StockPage({ params }: { params: Params }) {
   const path = `/api/v1/securities/${encodeURIComponent(market.toUpperCase())}/${encodeURIComponent(decodeURIComponent(code))}`;
   const [d, secs, fin, px] = await Promise.all([
     api<SecurityDetail>(path), api<Section[]>(`${path}/sections`), api<Financials>(`${path}/financials`),
-    api<{ data_status: string; provider: string | null; points: [string, number, number | null][] }>(`${path}/prices`),
+    api<{ data_status: string; price_state?: string; price_state_label?: string; provider: string | null; points: [string, number, number | null][] }>(`${path}/prices`),
   ]);
   if (!d.ok && d.status === 404) notFound();
   if (!d.ok) return <ErrorNotice message={d.error} />;
@@ -54,10 +61,10 @@ export default async function StockPage({ params }: { params: Params }) {
           </dl>
         </div>
         <div className="rounded-xl border border-line bg-raised/60 px-5 py-4 md:min-w-[220px]" data-testid="quote">
-          <div className="flex items-center justify-between gap-3 text-[11px] text-faint">現在株価 <StatusBadge status={quote.data_status} /></div>
+          <div className="flex items-center justify-between gap-3 text-[11px] text-faint">現在株価 <StatusBadge status={quote.data_status}>{quote.price_state_label ?? undefined}</StatusBadge></div>
           <div className="num mt-2 text-3xl font-semibold">{quote.price === null ? <Dash /> : quote.price.toLocaleString()}<span className="ml-1 text-sm text-faint">{quote.currency}</span></div>
           <div className="mt-1 text-[11px] leading-relaxed text-faint">
-            {quote.price !== null && <div className="num text-muted">{fmtDay(quote.as_of)} 終値・{quote.provider}（取得 {fmtDate(quote.fetched_at)}）</div>}
+            {quote.price !== null && <div className="num text-muted">{fmtDay(quote.as_of)} 終値（基準日）・{quote.provider}（取得日時 {fmtDate(quote.fetched_at)}）</div>}
             <div>{quote.note}</div>
           </div>
         </div>
@@ -74,7 +81,7 @@ export default async function StockPage({ params }: { params: Params }) {
         </ul>
       </nav>
 
-      <Card id="chart" title="株価チャート" aside={<StatusBadge status={quote.data_status} />}>
+      <Card id="chart" title="株価チャート" aside={<StatusBadge status={quote.data_status}>{quote.price_state_label ?? undefined}</StatusBadge>}>
         {px.ok && px.data.points.length > 1 ? (
           <LineChart points={px.data.points.map((p) => [p[0], p[1]] as [string, number])} label={`${s.name}の株価`} height={300} width={1400} />
         ) : (
@@ -83,8 +90,10 @@ export default async function StockPage({ params }: { params: Params }) {
             <div className="text-faint" aria-hidden>
               <svg width="120" height="40" viewBox="0 0 120 40" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 4"><path d="M2 30 L20 24 L38 28 L56 14 L74 18 L92 8 L118 12" /></svg>
             </div>
-            <p className="mt-2">株価データが未接続のため、チャートは表示しません。</p>
-            <p className="text-[11px] text-faint">{s.market === "JP" ? "J-Quants の APIキーを設定すると表示されます。" : "米国株の株価API（Tiingo / Massive）を設定すると表示されます。"}</p>
+            <p className="mt-2">{CHART_EMPTY[quote.price_state ?? ""] ?? "株価データがないため、チャートは表示しません。"}</p>
+            <p className="text-[11px] text-faint">{quote.price_state === "not_configured"
+              ? (s.market === "JP" ? "J-Quants の APIキーを設定すると表示されます。" : "米国株の株価API（Tiingo / Massive）を設定すると表示されます。")
+              : quote.note}</p>
           </div>
         </div>
         )}

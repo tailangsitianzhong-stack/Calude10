@@ -11,7 +11,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # SECの規則：User-Agent にアプリ名と連絡先（メールアドレス）を含める。
@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # J-Quants API V2：ダッシュボードで発行したAPIキー（x-api-key ヘッダーで送る）
     jquants_api_key: str = ""
     jquants_plan: str = "free"  # free / light / standard / premium（遅延・アクセス間隔に使う）
+    # JQUANTS_PLAN が実際に指定されたか（未指定なら取得の処理は従来どおり free の間隔で動くが、画面ではプランを
+    # 「未確認」として扱い、遅延を推測で表示しない）。環境変数からは設定できない（下の _plan_specified が決める）
+    jquants_plan_specified: bool = False
     # V1のリフレッシュトークン（V2では使えない）。設定されていたら画面で注意を出すためだけに読む
     jquants_refresh_token: str = ""
 
@@ -87,6 +90,15 @@ class Settings(BaseSettings):
     def _db_default(cls, v):
         # .env の「DATABASE_URL=」（空）は未指定として扱い、SQLite を使う
         return (v or "").strip() or "sqlite:///./data/asi.sqlite3"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _plan_specified(cls, data):
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k.lower() != "jquants_plan_specified"}
+            raw = next((v for k, v in data.items() if k.lower() == "jquants_plan"), "")
+            data["jquants_plan_specified"] = bool(str(raw or "").strip())
+        return data
 
     @field_validator("jquants_plan", "us_price_provider", "us_price_fallback", mode="before")
     @classmethod

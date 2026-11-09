@@ -19,14 +19,26 @@ export default async function DataPage() {
         <>
           <div className="grid gap-4 md:grid-cols-2">
             {r.data.data_sources.map((d) => (
-              <Card key={d.dataset} title={d.name} aside={<StatusBadge status={d.status} />}>
+              <Card key={d.dataset} title={d.name} aside={<StatusBadge status={d.status}>{d.price_state_label ?? undefined}</StatusBadge>}>
                 <dl className="grid grid-cols-[7.5em_1fr] gap-x-3 gap-y-1.5 text-[13px]" data-testid={`ds-${d.dataset}`}>
                   <dt className="text-faint">取得元</dt><dd>{d.provider}</dd>
                   <dt className="text-faint">信頼性</dt><dd>{d.reliability}</dd>
                   <dt className="text-faint">遅延</dt><dd>{d.delay ?? "—"}</dd>
-                  <dt className="text-faint">最新データ</dt><dd className="num">{fmtDay(d.latest_data_date)}</dd>
-                  <dt className="text-faint">最終取得</dt><dd className="num">{fmtDate(d.last_success_at)}{d.last_run_status && d.last_run_status !== "success" && <span className="ml-2 text-faint">（最終実行：{d.last_run_status}）</span>}</dd>
-                  <dt className="text-faint">件数</dt><dd className="num">{d.rows.toLocaleString()}{d.dataset === "sec_financials" ? "社" : d.dataset.startsWith("prices") ? "銘柄" : "件"}</dd>
+                  <dt className="text-faint">{d.price_state ? "株価の基準日" : "最新データ"}</dt><dd className="num">{fmtDay(d.latest_data_date)}</dd>
+                  <dt className="text-faint">{d.price_state ? "最終取得日時" : "最終取得"}</dt><dd className="num">{fmtDate(d.last_success_at)}{d.last_run_status && d.last_run_status !== "success" && <span className="ml-2 text-faint">（最終実行：{d.last_run_status}）</span>}</dd>
+                  <dt className="text-faint">件数</dt><dd className="num">{d.target_count != null
+                    ? `${(d.fetched_count ?? 0).toLocaleString()}／${d.target_count.toLocaleString()}銘柄（取得対象のうち株価のある銘柄）`
+                    : `${d.rows.toLocaleString()}${d.dataset === "sec_financials" ? "社" : "件"}`}</dd>
+                  {d.target_count != null && <>
+                    <dt className="text-faint">取得率</dt>
+                    <dd className="num" data-testid={`coverage-${d.dataset}`}>{d.target_count ? `${(100 * (d.fetched_count ?? 0) / d.target_count).toFixed(1)}%` : "—"}
+                      {d.price_partial ? "（一部取得）" : d.price_partial === false ? "（全銘柄取得済み）" : ""}
+                      {d.target_label && <span className="ml-1 text-faint">取得対象：{d.target_label}</span>}</dd>
+                    <dt className="text-faint">鮮度</dt>
+                    <dd data-testid={`freshness-${d.dataset}`}>{d.price_freshness === "stale" ? "データ遅延あり（提供元の遅延を超えて古い）"
+                      : d.price_freshness === "fresh" ? "提供元の遅延の範囲内" : "株価なし"}</dd>
+                  </>}
+                  {d.used_provider && <><dt className="text-faint">最新の取得元</dt><dd>{d.used_provider}</dd></>}
                   <dt className="text-faint">品質の注意</dt><dd className="num">{d.quality_issues}件</dd>
                 </dl>
                 {d.warnings.map((w) => <p key={w} className="mt-3 rounded-lg border border-warn/30 bg-warn/10 p-2 text-[12px] text-warn">⚠ {w}</p>)}

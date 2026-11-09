@@ -43,6 +43,16 @@ class DatasetStatus(BaseModel):
     message: str | None
     quality_issues: int
     warnings: list[str]
+    # 株価のデータセットだけ：接続状態（7つの状態）・表示名・取得対象の銘柄数・株価のある銘柄数・最新の株価の取得元
+    price_state: str | None = None
+    price_state_label: str | None = None
+    target_count: int | None = None
+    fetched_count: int | None = None
+    used_provider: str | None = None
+    price_partial: bool | None = None       # 取得率：取得対象の一部だけ株価がある
+    price_freshness: str | None = None      # 鮮度：fresh（提供元の遅延の範囲内）／stale（遅延を超えて古い）
+    price_fallback: bool | None = None      # 最新の株価が代替の取得元のもの（米国株）
+    target_label: str | None = None         # 取得対象（分母）の説明
 
 
 class SystemStatus(BaseModel):
@@ -90,6 +100,9 @@ class Quote(BaseModel):
     is_delayed: bool | None
     data_status: DataStatus
     note: str
+    # 株価の接続状態（services/price_status.py の7つの状態）と、その表示名。as_of は株価の基準日、fetched_at は取得日時
+    price_state: str | None = None
+    price_state_label: str | None = None
 
 
 class SecurityDetail(BaseModel):
@@ -97,11 +110,18 @@ class SecurityDetail(BaseModel):
     quote: Quote
 
 
+class SearchItem(SecurityOut):
+    """検索結果の1銘柄。株価の接続状態を添える（固定の「未接続」ではなく、実際の状態）。"""
+    price_state: str | None = None
+    price_state_label: str | None = None
+    price_data_status: DataStatus | None = None
+
+
 class SearchResult(BaseModel):
     query: str
     market: str | None
     total: int
-    items: list[SecurityOut]
+    items: list[SearchItem]
 
 
 class Section(BaseModel):
