@@ -3,15 +3,20 @@
 接続先は環境変数 DATABASE_URL だけで決める（API・ワーカー・スクリプトで共通。設定は config.Settings）。
 - 未設定・空・不正な値なら起動しない（既定の SQLite に黙って切り替えない）
 - SQLite は絶対パスだけを受け付ける（相対パスは、起動したディレクトリによって別のファイルを指すため拒否）
+- メモリ上の DB・ファイル名が空の SQLite（sqlite://・sqlite:///・sqlite:///:memory:）は受け付けない
 - SQLite のファイルとフォルダは自動では作らない。新しいDBを作るのは、初回セットアップの
   `python -m app.worker init-db --create-new-sqlite` と、テストが明示的に create=True を指定したときだけ
+- 通常の接続は SQLite の URI の mode=rw で開く（ファイルがなければ接続がエラーになり、作らない）。
+  起動時の検査だけでなく、起動後に DB ファイルが消えた・移動した場合の再接続でも空の DB を作らない
 - エンジンは最初に使うときに作る（このモジュールを読み込んだだけでは、どのDBにも接続しない）
 """
 import hashlib
 import json
 import os
+import sqlite3
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePath
+from urllib.parse import quote
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
@@ -64,10 +69,14 @@ def validate_url(url: str | None, create: bool = False) -> str:
         raise DatabaseConfigError("DATABASE_URL の形式が不正です。" + HELP) from None
     if u.get_backend_name() != "sqlite":
         return url  # PostgreSQL など：保存先は DB サーバー側（Docker Compose では名前付きボリューム）
-    if u.database in (None, "", ":memory:"):
-        return url  # メモリ上の DB（終了すると消える。検証用のスクリプトだけが使う）
-    if u.database.startswith("file:") or (u.query or {}).get("uri"):
-        raise DatabaseConfigError("SQLite の URI 形式（file:…）は使えません。" + HELP)
+    if u.database is None or u.database.strip() in ("", ":memory:"):
+        # sqlite://・sqlite:///・sqlite:///:memory: は実在のファイルを指さない（終了すると消える一時的な DB になる）
+        raise DatabaseConfigError("SQLite の DATABASE_URL にデータベースのファイルが指定されていません"
+                                  f"（{u.render_as_string(hide_password=True)}）。メモリ上の DB・空のファイル名は使えません。" + HELP)
+    if u.database.startswith("file:") or u.query or "?" in url:
+        # 「?」より後は接続オプションとして解釈され、パスの一部なら黙って切り捨てられる（別のファイルを指してしまう）
+        raise DatabaseConfigError("SQLite の URI 形式（file:…）や接続オプション（?…）は使えません。"
+                                  "保存先のパスに「?」を含めることもできません。" + HELP)
     p = Path(u.database)
     if not p.is_absolute():
         raise DatabaseConfigError(f"SQLite の保存先が相対パスです（{u.database}）。起動したフォルダによって別のファイルを"
@@ -89,11 +98,26 @@ def validate_url(url: str | None, create: bool = False) -> str:
     return url
 
 
+def sqlite_uri(path: PurePath, create: bool = False) -> str:
+    """SQLite の URI（file:…?mode=rw）。create=False なら、ファイルがないときに接続がエラーになる（作らない）。
+    パスは / 区切りにして、空白・日本語・#・?・% などをパーセント符号化する（SQLite が元に戻す）。
+    Windows のドライブ文字（D:/…）は先頭に / を付けて file:/D:/… とする（SQLite の URI の規則。D: をスキームなどと
+    取り違えない）。"""
+    p = path.as_posix()
+    if not p.startswith("/"):
+        p = "/" + p
+    return "file:" + quote(p, safe="/:") + ("?mode=rwc" if create else "?mode=rw")
+
+
 def make_engine(url: str | None = None, create: bool = False):
-    """検査済みの URL でエンジンを作る。url を省略すると設定（DATABASE_URL）を使う。"""
+    """検査済みの URL でエンジンを作る。url を省略すると設定（DATABASE_URL）を使う。
+
+    SQLite は、エンジンの URL は通常のパス（sqlite:///絶対パス。接続の管理方式・識別情報はこれで決まる）のまま、
+    実際の接続は creator で URI の mode=rw（create=True のときだけ mode=rwc）を指定して開く。"""
     url = validate_url(url if url is not None else get_settings().database_url, create=create)
     if make_url(url).get_backend_name() == "sqlite":
-        return create_engine(url, connect_args={"check_same_thread": False})
+        uri = sqlite_uri(Path(make_url(url).database), create=create)
+        return create_engine(url, creator=lambda: sqlite3.connect(uri, uri=True, check_same_thread=False))
     return create_engine(url, pool_pre_ping=True)
 
 

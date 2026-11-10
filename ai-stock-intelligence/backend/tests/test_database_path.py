@@ -1,8 +1,9 @@
 """DB の保存先（DATABASE_URL）の検査のテスト。どのテストも一時フォルダの中だけを使い、作業用の DB は開かない。"""
 import os
+import sqlite3
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -82,6 +83,129 @@ def test_empty_and_invalid_urls_are_rejected():
         dbmod.validate_url("not a url")
     with pytest.raises(dbmod.DatabaseConfigError, match="URI 形式"):
         dbmod.validate_url("sqlite:///file:/tmp/x.sqlite3?mode=ro&uri=true")
+    with pytest.raises(dbmod.DatabaseConfigError, match="接続オプション"):
+        dbmod.validate_url("sqlite:////tmp/x.sqlite3?mode=rwc")
+
+
+# ---- 修正1：実在のファイルを指さない SQLite の URL を拒否する ----
+@pytest.mark.parametrize("url", ["sqlite://", "sqlite:///", "sqlite:///:memory:", "sqlite:///   "])
+def test_memory_and_empty_sqlite_urls_are_rejected(url, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for create in (False, True):
+        with pytest.raises(dbmod.DatabaseConfigError, match="ファイルが指定されていません"):
+            dbmod.make_engine(url, create=create)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_memory_url_stops_api_and_worker(tmp_path, fresh):
+    fresh.chdir(tmp_path)
+    fresh.setenv("DATABASE_URL", "sqlite://")
+    config.get_settings.cache_clear()
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with pytest.raises(dbmod.DatabaseConfigError, match="ファイルが指定されていません"):
+        with TestClient(app):
+            pass
+    ran = []
+    fresh.setattr(worker, "job", lambda name, **kw: ran.append(name))
+    fresh.setattr(sys, "argv", ["worker", "fred"])
+    with pytest.raises(SystemExit) as e:
+        worker.main()
+    assert e.value.code == 2 and ran == [] and dbmod.engine is None
+    assert worker.init_database(create_new_sqlite=True) == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+# ---- 修正2：通常の接続は mode=rw（ファイルがなければエラー。作らない） ----
+def test_existing_database_opens_for_normal_read_and_write(tmp_path):
+    url = _new_db(tmp_path / "rw.sqlite3")
+    eng = dbmod.make_engine(url)  # 通常の接続（create=False）
+    with eng.begin() as c:
+        c.exec_driver_sql("create table t(x)")
+        c.exec_driver_sql("insert into t values (1)")
+    with eng.connect() as c:
+        assert c.exec_driver_sql("select x from t").scalar() == 1
+    eng.dispose()
+
+
+def test_normal_connection_to_missing_file_fails_and_creates_nothing(tmp_path):
+    p = tmp_path / "missing.sqlite3"
+    with pytest.raises(dbmod.DatabaseConfigError, match="存在しません"):
+        dbmod.make_engine(f"sqlite:///{p}")
+    with pytest.raises(sqlite3.OperationalError):  # 起動時の検査を通さずに、接続の方式そのものでも作らない
+        sqlite3.connect(dbmod.sqlite_uri(p), uri=True)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_file_removed_after_engine_creation_is_not_recreated(tmp_path):
+    url = _new_db(tmp_path / "gone.sqlite3")
+    eng = dbmod.make_engine(url)
+    with eng.connect() as c:
+        c.exec_driver_sql("select 1")
+    (tmp_path / "gone.sqlite3").unlink()  # 動作中に DB ファイルが消えた・移動した
+    eng.dispose()  # 接続を捨てて、新しく接続し直させる
+    from sqlalchemy.exc import OperationalError
+    with pytest.raises(OperationalError):
+        with eng.connect() as c:
+            c.exec_driver_sql("select 1")
+    assert list(tmp_path.iterdir()) == []  # 空の DB（や付属ファイル）を作っていない
+
+
+def test_explicit_create_still_creates_a_test_database(tmp_path):
+    p = tmp_path / "created.sqlite3"
+    eng = dbmod.make_engine(f"sqlite:///{p}", create=True)
+    assert not p.exists()  # エンジンを作っただけではまだ作らない
+    dbmod.init_db(eng)
+    assert p.is_file()
+    dbmod.make_engine(f"sqlite:///{p}").dispose()  # 作ったあとは通常の接続で開ける
+
+
+def test_init_db_result_opens_with_normal_connection(tmp_path, fresh):
+    p = tmp_path / "setup.sqlite3"
+    fresh.setenv("DATABASE_URL", f"sqlite:///{p}")
+    config.get_settings.cache_clear()
+    assert worker.init_database(create_new_sqlite=True) == 0
+    fresh.setattr(dbmod, "engine", None)
+    with dbmod.get_engine().connect() as c:  # 通常の起動の経路（mode=rw）
+        assert c.exec_driver_sql("select count(*) from sqlite_master where name='securities'").scalar() == 1
+
+
+@pytest.mark.parametrize("name", ["空白 と 日本語", "a#b%c", "100%_test", "x[1];y=2&z"])
+def test_paths_with_spaces_japanese_and_special_characters(tmp_path, name):
+    folder = tmp_path / name
+    folder.mkdir()
+    p = folder / "データ #1.sqlite3"
+    dbmod.init_db(dbmod.make_engine(f"sqlite:///{p}", create=True))
+    # 指定したとおりの場所に1つだけ作られている（文字の解釈の違いで別の場所に作っていない）
+    assert p.is_file() and sorted(str(x.relative_to(tmp_path)) for x in tmp_path.rglob("*")) == [name, f"{name}/データ #1.sqlite3"]
+    eng = dbmod.make_engine(f"sqlite:///{p}")
+    with eng.connect() as c:
+        assert c.exec_driver_sql("select count(*) from sqlite_master").scalar() > 0
+    eng.dispose()
+
+
+def test_question_mark_in_sqlite_path_is_rejected(tmp_path):
+    """SQLAlchemy は「?」以降をパスから切り捨てる（例 /t/a?b/x.db → /t/a）。別のファイルを指さないよう拒否する。"""
+    d = tmp_path / "a?b"
+    d.mkdir()
+    for create in (False, True):
+        with pytest.raises(dbmod.DatabaseConfigError, match="「\\?」を含める"):
+            dbmod.make_engine(f"sqlite:///{d / 'x.sqlite3'}", create=create)
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["a?b"] and list(d.iterdir()) == []
+
+
+def test_sqlite_uri_format_for_posix_and_windows_paths():
+    assert dbmod.sqlite_uri(Path("/srv/asi/data/asi.sqlite3")) == "file:/srv/asi/data/asi.sqlite3?mode=rw"
+    assert dbmod.sqlite_uri(Path("/srv/asi/data/asi.sqlite3"), create=True) == "file:/srv/asi/data/asi.sqlite3?mode=rwc"
+    assert dbmod.sqlite_uri(Path("/a b/x#?.db")) == "file:/a%20b/x%23%3F.db?mode=rw"
+    # Windows のドライブ文字：file:/D:/… とする（D: をスキームとして扱わない）。実機の Windows では未検証
+    assert dbmod.sqlite_uri(PureWindowsPath(r"D:\ASI\data\asi.sqlite3")) == "file:/D:/ASI/data/asi.sqlite3?mode=rw"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows では D:/… は絶対パス")
+def test_windows_drive_path_is_rejected_on_linux():
+    with pytest.raises(dbmod.DatabaseConfigError, match="相対パス"):
+        dbmod.validate_url("sqlite:///D:/ASI/data/asi.sqlite3")
 
 
 # 4. 存在しない保存先・フォルダ・ファイルでないもの
