@@ -44,11 +44,16 @@ services:
     command: ["python", "-m", "app.worker", "schedule"]
     env_file: .env
     environment:
+      # api と同じ値（DB の接続先は1か所で決める）
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-asi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-asi}
+      # 起動時に api の /healthz と DB の識別情報を比べ、違う DB なら（確認できなくても）取得を始めない
+      DB_CHECK_API_URL: http://api:8000
       # 起動した環境の環境変数（クラウド環境の設定など）を優先し、なければ .env の値を使う
       SEC_USER_AGENT: ${SEC_USER_AGENT:-}
     depends_on:
       db:
+        condition: service_healthy
+      api:
         condition: service_healthy
     restart: unless-stopped
 

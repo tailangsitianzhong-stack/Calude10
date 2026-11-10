@@ -145,7 +145,7 @@ def test_app_and_worker_start_with_invalid_plan(tmp_path, monkeypatch):
     from app import db as dbmod
     from app import worker
     _env(monkeypatch, JQUANTS_PLAN="gold", DATABASE_URL=f"sqlite:///{tmp_path / 't.sqlite3'}")
-    eng = dbmod.make_engine(f"sqlite:///{tmp_path / 't.sqlite3'}")
+    eng = dbmod.make_engine(f"sqlite:///{tmp_path / 't.sqlite3'}", create=True)
     monkeypatch.setattr(dbmod, "engine", eng)
     dbmod.SessionLocal.configure(bind=eng)
     from app.main import app

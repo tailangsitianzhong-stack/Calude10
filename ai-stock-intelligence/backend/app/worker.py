@@ -17,14 +17,22 @@
     python -m app.worker us_prices --no-fallback  # 全銘柄の取得で、代替の取得元に切り替えない
     python -m app.worker all             # 上記をすべて（失敗したものがあっても続行）
     python -m app.worker schedule        # 定期実行（Docker の worker サービスで使う）
+    python -m app.worker check-db        # 接続先（DATABASE_URL）の検査と識別情報の表示（DB には書き込まない）
+    python -m app.worker check-db --api-url http://127.0.0.1:8000   # API と同じ DB を使っているかを比べる
+    python -m app.worker init-db --create-new-sqlite   # 初回セットアップ：まだない SQLite のDBを新しく作る
+
+接続先は DATABASE_URL（SQLite は絶対パス）。未設定・相対パス・存在しないDBなら、DB に触れる前に止まる。
+環境変数 DB_CHECK_API_URL を設定すると、起動時に API と同じ DB を使っているかを確かめ、違えば止まる。
 """
 import argparse
+import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
 
-from .db import SessionLocal, init_db
+from .db import DatabaseConfigError, SessionLocal, db_identity, get_engine, init_db
 
 log = logging.getLogger("worker")
 
@@ -33,6 +41,7 @@ def job(name: str, **kw) -> None:
     from .services import ingest_edinet, ingest_fred, ingest_jquants, ingest_jquants_fins, ingest_sec, ingest_us_prices
     fn = {"fred": ingest_fred.run, "sec": ingest_sec.run, "jquants": ingest_jquants.run, "us_prices": ingest_us_prices.run,
           "jquants_fins": ingest_jquants_fins.run, "edinet": ingest_edinet.run}[name]
+    get_engine()
     with SessionLocal() as s:
         try:
             r = fn(s, **kw)
@@ -64,12 +73,77 @@ def schedule() -> None:
         time.sleep(60)
 
 
+def api_db_fingerprint(api_url: str, attempts: int = 3) -> str | None:
+    """API の /healthz から、API が使っている DB の fingerprint を読む（読めなければ None）。"""
+    import httpx
+    for i in range(attempts):
+        try:
+            r = httpx.get(api_url.rstrip("/") + "/healthz", timeout=10, trust_env=False)
+            return (r.json().get("db") or {}).get("fingerprint")
+        except (httpx.HTTPError, ValueError, AttributeError):
+            if i + 1 < attempts:
+                time.sleep(2)
+    return None
+
+
+def check_db(api_url: str | None, quiet: bool = False) -> int:
+    """接続先を検査して識別情報を表示する。api_url があれば API の DB と比べる。0＝問題なし、2＝誤り・不一致。"""
+    try:
+        get_engine()
+    except DatabaseConfigError as e:
+        log.error("データベースの設定の誤り：%s", e)
+        return 2
+    ident = db_identity()
+    if not quiet:
+        print(json.dumps(ident, ensure_ascii=False, indent=2))
+    if api_url:
+        theirs = api_db_fingerprint(api_url)
+        if theirs is None:
+            log.error("API（%s）の DB を確認できない。同じ DB を使っているか判定できないため止める", api_url)
+            return 2
+        if theirs != ident["fingerprint"]:
+            log.error("API とワーカーの DB が異なる（API %s／ワーカー %s）。DATABASE_URL を同じ値にする", theirs, ident["fingerprint"])
+            return 2
+        log.info("API とワーカーは同じ DB を使っている（%s）", theirs)
+    return 0
+
+
+def init_database(create_new_sqlite: bool) -> int:
+    """初回セットアップ。SQLite のDBがまだないときに、--create-new-sqlite の指定があれば新しく作ってテーブルを用意する。
+    すでに存在するDBには何もしない（上書き・初期化しない）。フォルダは作らない。"""
+    from . import db as dbmod
+    from .config import get_settings
+    url = get_settings().database_url
+    try:
+        p = dbmod.sqlite_path(dbmod.validate_url(url, create=True))
+    except DatabaseConfigError as e:
+        log.error("データベースの設定の誤り：%s", e)
+        return 2
+    if p is None:
+        log.error("init-db は SQLite のファイルを新しく作るときだけ使う（PostgreSQL は docker compose が用意する）")
+        return 2
+    if p.exists():
+        log.error("DB はすでに存在する（%s）。上書き・初期化はしない", p)
+        return 2
+    if not create_new_sqlite:
+        log.error("新しいDBを作るには --create-new-sqlite を指定する（保存先 %s）", p)
+        return 2
+    dbmod.engine = dbmod.make_engine(url, create=True)
+    init_db()
+    log.info("新しいDBを作成した（%s）", p)
+    return 0
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stdout)
     # httpx は要求URLをそのままログに出す（FRED の api_key などを含む）ため、警告以上だけにする
     logging.getLogger("httpx").setLevel(logging.WARNING)
     ap = argparse.ArgumentParser()
-    ap.add_argument("task", choices=["fred", "sec", "jquants", "us_prices", "jquants_fins", "edinet", "all", "schedule"])
+    ap.add_argument("task", choices=["fred", "sec", "jquants", "us_prices", "jquants_fins", "edinet", "all", "schedule",
+                                     "check-db", "init-db"])
+    ap.add_argument("--api-url", default=None, help="check-db：比べる API の URL（例 http://127.0.0.1:8000）")
+    ap.add_argument("--create-new-sqlite", action="store_true",
+                    help="init-db：まだない SQLite のDBを新しく作る（初回セットアップだけ。既存のDBには何もしない）")
     ap.add_argument("--start", default=None, help="edinet：提出日の開始 YYYY-MM-DD")
     ap.add_argument("--recheck", action="store_true", help="edinet：API に接続せず、保存済みの値から照合の品質の記録を作り直す")
     ap.add_argument("--all-listed", action="store_true",
@@ -97,6 +171,19 @@ def main() -> None:
                     help="jquants_fins：API に接続せず、内容が同じ品質の記録の重複だけを削除する（財務の値には触れない）")
     ap.add_argument("--quality-only", action="store_true", help="jquants_fins：API に接続せず、保存済みの開示から品質の記録だけを作る")
     a = ap.parse_args()
+    if a.task == "init-db":
+        sys.exit(init_database(a.create_new_sqlite))
+    if a.task == "check-db":
+        sys.exit(check_db(a.api_url))
+    # DB の接続先の検査（API・DB に触れる前に止める。既定の DB に黙って切り替えない）
+    try:
+        get_engine()
+    except DatabaseConfigError as e:
+        log.error("データベースの設定の誤り：%s", e)
+        sys.exit(2)
+    api_url = os.environ.get("DB_CHECK_API_URL", "").strip()
+    if api_url and check_db(api_url, quiet=True) != 0:
+        sys.exit(2)
     # 銘柄指定の確認（API・DB に触れる前に止める）
     codes = [c.strip() for c in a.codes.split(",") if c.strip()] if a.codes is not None else None
     if a.task in ("jquants", "us_prices") and codes is not None:

@@ -38,7 +38,7 @@ def _app_db(path):
     from sqlalchemy.orm import Session
     from app.db import init_db, make_engine
     from app.models import FinancialFact, Security
-    eng = make_engine(f"sqlite:///{path}")
+    eng = make_engine(f"sqlite:///{path}", create=True)
     init_db(eng)
     with Session(eng) as s:
         x = Security(market="US", code="AAA", cik=1, name="AAA Inc", name_search="aaa", security_type="common",

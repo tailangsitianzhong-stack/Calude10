@@ -90,7 +90,8 @@ def test_empty_values_in_env_file_fall_back_to_defaults(clean_env, tmp_path):
     f.write_text("DATABASE_URL=\nJQUANTS_PLAN=\nMASSIVE_BASE_URL=\nSEC_UNIVERSE_SIZE=\nSEC_EXTRA_TICKERS=\n", encoding="utf-8")
     s = Settings(_env_file=(f,))
     # 空の JQUANTS_PLAN は「未設定」（Free とは区別する）。取得は Free 相当の安全側の条件で行う
-    assert s.database_url.startswith("sqlite:///") and s.jquants_plan == "" and s.jquants_plan_status == "unset"
+    # 空の DATABASE_URL は「未設定」のまま（既定の SQLite に置き換えない。API・ワーカーは起動時に止まる）
+    assert s.database_url == "" and s.jquants_plan == "" and s.jquants_plan_status == "unset"
     assert s.jquants_fetch_plan == "free"
     assert s.massive_base_url == "https://api.massive.com" and s.sec_universe_size == 150 and s.sec_extra_tickers.startswith("KO")
 
